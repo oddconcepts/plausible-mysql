@@ -1,348 +1,2437 @@
-diff -r analytics-1d0300a03abc393ebea4f0385a039822548bc5ad/config/config.exs plausible/config/config.exs
-48c48
-<   included_environments: [:prod, :staging],
----
->   included_environments: [],
-86a87,90
->   ),
->   backup_urls: System.get_env(
->     "CLICKHOUSE_DATABASE_URL_LIST",
->     "http://127.0.0.1:8123/plausible_test;http://127.0.0.1:8123/plausible_test"
-135,137c139,140
-<   repo: Plausible.Repo,
-<   queues: if(cron_enabled, do: base_queues ++ extra_queues, else: base_queues),
-<   crontab: if(cron_enabled, do: base_cron ++ extra_cron, else: base_cron)
----
->   crontab: false,
->   queues: false
-diff -r analytics-1d0300a03abc393ebea4f0385a039822548bc5ad/config/releases.exs plausible/config/releases.exs
-80c80
-<   adapter: Ecto.Adapters.Postgres
----
->   adapter: Ecto.Adapters.MyXQL
-Only in plausible: k8s.yaml
-Only in plausible/lib/mix/tasks: rotate_salts.ex
-diff -r analytics-1d0300a03abc393ebea4f0385a039822548bc5ad/lib/plausible/application.ex plausible/lib/plausible/application.ex
-14,15c14
-<       Plausible.Session.Salts,
-<       {Oban, Application.get_env(:plausible, Oban)}
----
->       Plausible.Session.Salts
-19a19
->     :ok = :telemetry.attach("ch-slow-queries", [:my_app, :repo, :query], &Plausible.ClickhouseMonitor.handle_event/4, %{})
-Only in plausible/lib/plausible: clickhouse_monitor.ex
-diff -r analytics-1d0300a03abc393ebea4f0385a039822548bc5ad/lib/plausible/event/clickhouse_schema.ex plausible/lib/plausible/event/clickhouse_schema.ex
-12a13
->     field :product_id, :string
-23a25
->     field :returned_product_ids, :string
-35a38,40
->       :session_id,
->       :product_id,
->       :returned_product_ids,
-diff -r analytics-1d0300a03abc393ebea4f0385a039822548bc5ad/lib/plausible/repo.ex plausible/lib/plausible/repo.ex
-4c4
-<     adapter: Ecto.Adapters.Postgres
----
->     adapter: Ecto.Adapters.MyXQL
-diff -r analytics-1d0300a03abc393ebea4f0385a039822548bc5ad/lib/plausible/session/salts.ex plausible/lib/plausible/session/salts.ex
-53c53
-<       from s in "salts", where: s.inserted_at < fragment("now() - '48 hours'::interval")
----
->       from s in "salts", where: s.inserted_at < fragment("subtime(now(), '48:00:00')")
-diff -r analytics-1d0300a03abc393ebea4f0385a039822548bc5ad/lib/plausible/site/monthly_report.ex plausible/lib/plausible/site/monthly_report.ex
-6c6,7
-<     field :recipients, {:array, :string}
----
->     field :recipients, {:array, :string}, virtual: true
->     field :recipient_list, :string
-9a11,20
->   end
-> 
->   @spec unflatten_recipients(%Plausible.Site.MonthlyReport{}) :: %Plausible.Site.MonthlyReport{}
->   def unflatten_recipients(%Plausible.Site.MonthlyReport{} = config) do
->     %{config | recipients: String.split(config.recipient_list, "||")}
->   end
-> 
->   @spec flatten_recipients(%Plausible.Site.MonthlyReport{}) :: %Plausible.Site.MonthlyReport{}
->   def flatten_recipients(%Plausible.Site.MonthlyReport{} = config) do
->     %{config | recipient_list: Enum.join(config.recipients, "||")}
-diff -r analytics-1d0300a03abc393ebea4f0385a039822548bc5ad/lib/plausible/site/weekly_report.ex plausible/lib/plausible/site/weekly_report.ex
-6c6,7
-<     field :recipients, {:array, :string}
----
->     field :recipients, {:array, :string}, virtual: true
->     field :recipient_list, :string
-9a11,20
->   end
-> 
->   @spec unflatten_recipients(%Plausible.Site.WeeklyReport{}) :: %Plausible.Site.WeeklyReport{}
->   def unflatten_recipients(%Plausible.Site.WeeklyReport{} = config) do
->     %{config | recipients: String.split(config.recipient_list, "||")}
->   end
-> 
->   @spec flatten_recipients(%Plausible.Site.WeeklyReport{}) :: %Plausible.Site.WeeklyReport{}
->   def flatten_recipients(%Plausible.Site.WeeklyReport{} = config) do
->     %{config | recipient_list: Enum.join(config.recipients, "||")}
-diff -r analytics-1d0300a03abc393ebea4f0385a039822548bc5ad/lib/plausible_web/controllers/api/external_controller.ex plausible/lib/plausible_web/controllers/api/external_controller.ex
-64a65,66
->       "product_id" => params["p"] || params["productId"],
->       "returned_product_ids" => params["s"] || params["searchResults"]
-98c100,102
-<         screen_size: calculate_screen_size(params["screen_width"]) || ""
----
->         screen_size: calculate_screen_size(params["screen_width"]) || "",
->         product_id: to_string(params["product_id"]) || nil,
->         returned_product_ids: to_string(params["returned_product_ids"]) || nil
-diff -r analytics-1d0300a03abc393ebea4f0385a039822548bc5ad/mix.exs plausible/mix.exs
-69c69
-<       {:postgrex, ">= 0.0.0"},
----
->       {:myxql, ">= 0.0.0"},
-diff -r analytics-1d0300a03abc393ebea4f0385a039822548bc5ad/priv/clickhouse_repo/migrations/20200915070607_create_events_and_sessions.exs plausible/priv/clickhouse_repo/migrations/20200915070607_create_events_and_sessions.exs
-10c10
-<     create_if_not_exists table(:events, engine: "MergeTree() PARTITION BY toYYYYMM(timestamp) ORDER BY (name, domain, user_id, timestamp) SETTINGS index_granularity = 8192") do
----
->     create_if_not_exists table(:events, engine: "ReplicatedMergeTree('/ch-analytics/tables/{layer}-{shard}/events', '{replica}') PARTITION BY toYYYYMM(timestamp) ORDER BY (name, domain, user_id, timestamp) SETTINGS index_granularity = 8192") do
-29c29
-<     create_if_not_exists table(:sessions, engine: "CollapsingMergeTree(sign) PARTITION BY toYYYYMM(start) ORDER BY (domain, user_id, session_id, start) SETTINGS index_granularity = 8192") do
----
->     create_if_not_exists table(:sessions, engine: "ReplicatedCollapsingMergeTree('/ch-analytics/tables/{layer}-{shard}/sessions', '{replica}', sign) PARTITION BY toYYYYMM(start) ORDER BY (domain, user_id, session_id, start) SETTINGS index_granularity = 8192") do
-52c52
-< end
----
-> end
+diff --git a/Dockerfile b/Dockerfile
+index 3e9bfb7..a49fa9a 100644
+--- a/Dockerfile
++++ b/Dockerfile
+@@ -2,7 +2,7 @@
+ # platform specific, it makes sense to build it in the docker
+ 
+ #### Builder
+-FROM elixir:1.10.4-alpine as buildcontainer
++FROM hexpm/elixir:1.11.3-erlang-23.2.1-alpine-3.12.1 as buildcontainer
+ 
+ # preparation
+ ARG APP_VER=0.0.1
+@@ -14,7 +14,7 @@ RUN mkdir /app
+ WORKDIR /app
+ 
+ # install build dependencies
+-RUN apk add --no-cache git nodejs yarn python npm ca-certificates wget gnupg make erlang gcc libc-dev && \
++RUN apk add --no-cache git nodejs yarn python3 npm ca-certificates wget gnupg make erlang gcc libc-dev && \
+     npm install npm@latest -g && \
+     npm install -g webpack
+ 
+@@ -28,8 +28,7 @@ RUN mix local.hex --force && \
+ COPY assets/package.json assets/package-lock.json ./assets/
+ COPY tracker/package.json tracker/package-lock.json ./tracker/
+ 
+-RUN npm audit fix --prefix ./assets && \
+-    npm install --prefix ./assets && \
++RUN npm install --prefix ./assets && \
+     npm install --prefix ./tracker
+ 
+ COPY assets ./assets
+diff --git a/config/config.exs b/config/config.exs
+index 7379058..cc7c775 100644
+--- a/config/config.exs
++++ b/config/config.exs
+@@ -45,7 +45,7 @@ config :plausible, PlausibleWeb.Endpoint,
+ 
+ config :sentry,
+   dsn: System.get_env("SENTRY_DSN"),
+-  included_environments: [:prod, :staging],
++  included_environments: [],
+   environment_name: String.to_atom(System.get_env("ENVIRONMENT", "dev")),
+   enable_source_code_context: true,
+   root_source_code_path: File.cwd!(),
+@@ -60,9 +60,6 @@ config :logger, :console,
+ # Use Jason for JSON parsing in Phoenix
+ config :phoenix, :json_library, Jason
+ 
+-config :ua_inspector,
+-  database_path: "priv/ua_inspector"
+-
+ config :ref_inspector,
+   database_path: "priv/ref_inspector"
+ 
+@@ -84,6 +81,10 @@ config :plausible, Plausible.ClickhouseRepo,
+   url: System.get_env(
+     "CLICKHOUSE_DATABASE_URL",
+     "http://127.0.0.1:8123/plausible_test"
++  ),
++  backup_urls: System.get_env(
++    "CLICKHOUSE_DATABASE_URL_LIST",
++    "http://127.0.0.1:8123/plausible_test;http://127.0.0.1:8123/plausible_test"
+   )
+ 
+ config :plausible,
+@@ -132,9 +133,8 @@ extra_queues = [
+ ]
+ 
+ config :plausible, Oban,
+-  repo: Plausible.Repo,
+-  queues: if(cron_enabled, do: base_queues ++ extra_queues, else: base_queues),
+-  crontab: if(cron_enabled, do: base_cron ++ extra_cron, else: base_cron)
++  crontab: false,
++  queues: false
+ 
+ config :plausible, :google,
+   client_id: System.get_env("GOOGLE_CLIENT_ID"),
+diff --git a/config/releases.exs b/config/releases.exs
+index 0853a69..3501825 100644
+--- a/config/releases.exs
++++ b/config/releases.exs
+@@ -76,13 +76,17 @@ config :plausible, PlausibleWeb.Endpoint,
+ 
+ config :plausible,
+   Plausible.Repo,
++  pool_size: 25,
++  timeout: 10_000,
++  connect_timeout: 10_000,
++  handshake_timeout: 10_000,
+   url: db_url,
+-  adapter: Ecto.Adapters.Postgres
++  adapter: Ecto.Adapters.MyXQL
+ 
+ config :sentry,
+   dsn: sentry_dsn,
+   environment_name: env,
+-  included_environments: ["prod", "staging"],
++  included_environments: [],
+   release: app_version,
+   tags: %{app_version: app_version}
+ 
+@@ -180,9 +184,6 @@ config :plausible, :hcaptcha,
+ config :ref_inspector,
+   init: {Plausible.Release, :configure_ref_inspector}
+ 
+-config :ua_inspector,
+-  init: {Plausible.Release, :configure_ua_inspector}
+-
+ if geolite2_country_db do
+   config :geolix,
+     databases: [
+diff --git a/hosting/deployment-staging.yaml b/hosting/deployment-staging.yaml
+new file mode 100644
+index 0000000..86c3393
+--- /dev/null
++++ b/hosting/deployment-staging.yaml
+@@ -0,0 +1,153 @@
++{
++  "kind": "Deployment",
++  "apiVersion": "extensions/v1beta1",
++  "metadata": {
++    "name": "analytics-dev",
++    "namespace": "oc-system",
++    "selfLink": "/apis/extensions/v1beta1/namespaces/oc-system/deployments/analytics-dev",
++    "uid": "c6debd69-4002-11eb-8c75-00d86134f694",
++    "resourceVersion": "980722087",
++    "generation": 24,
++    "creationTimestamp": "2020-12-17T00:57:03Z",
++    "labels": {
++      "k8s-app": "analytics-dev"
++    },
++    "annotations": {
++      "deployment.kubernetes.io/revision": "17"
++    }
++  },
++  "spec": {
++    "replicas": 0,
++    "selector": {
++      "matchLabels": {
++        "k8s-app": "analytics-dev"
++      }
++    },
++    "template": {
++      "metadata": {
++        "name": "analytics-dev",
++        "creationTimestamp": null,
++        "labels": {
++          "k8s-app": "analytics-dev"
++        }
++      },
++      "spec": {
++        "containers": [
++          {
++            "name": "analytics-dev",
++            "image": "docker-registry.oddconcepts.net/plausible/analytics:0.6.15",
++            "command": [
++                "sh"
++            ],
++            "args": [
++                "-c",
++                "sleep 10 && /entrypoint.sh db createdb && /entrypoint.sh db migrate && /entrypoint.sh db init-admin && /entrypoint.sh run"
++            ],
++            "env": [
++              {
++                "name": "ADMIN_USER_EMAIL",
++                "value": "angela@oddconcepts.kr"
++              },
++              {
++                "name": "ADMIN_USER_NAME",
++                "value": "oddconcepts"
++              },
++              {
++                "name": "ADMIN_USER_PWD",
++                "valueFrom": {
++                  "secretKeyRef": {
++                    "name": "analytics-secret",
++                    "key": "admin-user-pwd"
++                  }
++                }
++              },
++              {
++                "name": "BASE_URL",
++                "value": "http://analytics-dev.pxl.ai/"
++              },
++              {
++                "name": "SECRET_KEY_BASE",
++                "valueFrom": {
++                  "secretKeyRef": {
++                    "name": "analytics-secret",
++                    "key": "secret-key-base"
++                  }
++                }
++              },
++              {
++                "name": "CLICKHOUSE_DATABASE_URL",
++                "valueFrom": {
++                  "secretKeyRef": {
++                    "name": "analytics-secret",
++                    "key": "clickhouse-db-url"
++                  }
++                }
++              },
++              {
++                "name": "DATABASE_URL",
++                "valueFrom": {
++                  "secretKeyRef": {
++                    "name": "analytics-secret",
++                    "key": "meta-db-url"
++                  }
++                }
++              }
++            ],
++            "resources": {},
++            "terminationMessagePath": "/dev/termination-log",
++            "terminationMessagePolicy": "File",
++            "imagePullPolicy": "IfNotPresent",
++            "securityContext": {
++              "privileged": false,
++              "procMount": "Default"
++            }
++          }
++        ],
++        "restartPolicy": "Always",
++        "terminationGracePeriodSeconds": 30,
++        "dnsPolicy": "ClusterFirst",
++        "nodeSelector": {
++          "app-general": "yes"
++        },
++        "securityContext": {},
++        "imagePullSecrets": [
++          {
++            "name": "docker-registry.oddconcepts.net"
++          }
++        ],
++        "schedulerName": "default-scheduler"
++      }
++    },
++    "strategy": {
++      "type": "RollingUpdate",
++      "rollingUpdate": {
++        "maxUnavailable": "25%",
++        "maxSurge": "25%"
++      }
++    },
++    "revisionHistoryLimit": 10,
++    "progressDeadlineSeconds": 600
++  },
++  "status": {
++    "observedGeneration": 24,
++    "conditions": [
++      {
++        "type": "Progressing",
++        "status": "True",
++        "lastUpdateTime": "2021-06-16T08:51:54Z",
++        "lastTransitionTime": "2020-12-17T00:57:03Z",
++        "reason": "NewReplicaSetAvailable",
++        "message": "ReplicaSet \"analytics-dev-589cf4fddd\" has successfully progressed."
++      },
++      {
++        "type": "Available",
++        "status": "True",
++        "lastUpdateTime": "2021-06-16T08:52:17Z",
++        "lastTransitionTime": "2021-06-16T08:52:17Z",
++        "reason": "MinimumReplicasAvailable",
++        "message": "Deployment has minimum availability."
++      }
++    ],
++    "collisionCount": 1
++  }
++}
 \ No newline at end of file
-Only in plausible/priv/clickhouse_repo/migrations: 20201101000000_add_product_ids.exs
-diff -r analytics-1d0300a03abc393ebea4f0385a039822548bc5ad/priv/repo/migrations/20181201181549_add_pageviews.exs plausible/priv/repo/migrations/20181201181549_add_pageviews.exs
-6c6
-<       add :hostname, :text, null: false
----
->       add :hostname, :string, size: 255, null: false
-9,10d8
-<       add :user_agent, :text
-<       add :screen_width, :integer
-11a10
->       add :site_id, :string, size: 255, null: false
-diff -r analytics-1d0300a03abc393ebea4f0385a039822548bc5ad/priv/repo/migrations/20190109173917_create_sites.exs plausible/priv/repo/migrations/20190109173917_create_sites.exs
-6a7
->       add :trial_expiry_date, :date, null: false
-diff -r analytics-1d0300a03abc393ebea4f0385a039822548bc5ad/priv/repo/migrations/20190213224404_add_intro_emails.exs plausible/priv/repo/migrations/20190213224404_add_intro_emails.exs
-6c6
-<       add :user_id, references(:users), null: false
----
->       add :user_id, references(:users, on_delete: :delete_all), null: false
-Only in analytics-1d0300a03abc393ebea4f0385a039822548bc5ad/priv/repo/migrations: 20190219130809_delete_intro_emails_when_user_is_deleted.exs
-diff -r analytics-1d0300a03abc393ebea4f0385a039822548bc5ad/priv/repo/migrations/20190324155606_add_password_hash_to_users.exs plausible/priv/repo/migrations/20190324155606_add_password_hash_to_users.exs
-6c6
-<       add :password_hash, :string
----
->       add :password_hash, :string, size: 255
-diff -r analytics-1d0300a03abc393ebea4f0385a039822548bc5ad/priv/repo/migrations/20190410095248_add_feedback_emails.exs plausible/priv/repo/migrations/20190410095248_add_feedback_emails.exs
-6c6
-<       add :user_id, references(:users), null: false
----
->       add :user_id, references(:users, on_delete: :delete_all), null: false
-Only in analytics-1d0300a03abc393ebea4f0385a039822548bc5ad/priv/repo/migrations: 20190424162903_delete_feedback_emails_when_user_is_deleted.exs
-Only in analytics-1d0300a03abc393ebea4f0385a039822548bc5ad/priv/repo/migrations: 20190430140411_use_citext_for_email.exs
-Only in analytics-1d0300a03abc393ebea4f0385a039822548bc5ad/priv/repo/migrations: 20190520144229_change_user_id_to_uuid.exs
-Only in analytics-1d0300a03abc393ebea4f0385a039822548bc5ad/priv/repo/migrations: 20190523160838_add_raw_referrer.exs
-Only in analytics-1d0300a03abc393ebea4f0385a039822548bc5ad/priv/repo/migrations: 20190523171519_add_indices_to_referrers.exs
-diff -r analytics-1d0300a03abc393ebea4f0385a039822548bc5ad/priv/repo/migrations/20190718160353_create_google_search_console_integration.exs plausible/priv/repo/migrations/20190718160353_create_google_search_console_integration.exs
-10a11,12
->       add :site_id, references(:sites, on_delete: :delete_all), null: false
->       add :property, :text
-15c17,27
-<     create unique_index(:google_auth, :user_id)
----
->     create unique_index(:google_auth, [:site_id])
-> 
->     #flush()
-> 
->     #for auth <- Repo.all(Plausible.Site.GoogleAuth) do
->     #  auth = Repo.preload(auth, :site)
->     #  property = "https://#{auth.site.domain}"
-> 
->     #  Plausible.Site.GoogleAuth.set_property(auth, %{property: property})
->     #  |> Repo.update!()
->     #end
-Only in analytics-1d0300a03abc393ebea4f0385a039822548bc5ad/priv/repo/migrations: 20190723141824_associate_google_auth_with_site.exs
-Only in analytics-1d0300a03abc393ebea4f0385a039822548bc5ad/priv/repo/migrations: 20190730014913_add_monthly_stats.exs
-Only in analytics-1d0300a03abc393ebea4f0385a039822548bc5ad/priv/repo/migrations: 20190730142200_add_weekly_stats.exs
-Only in analytics-1d0300a03abc393ebea4f0385a039822548bc5ad/priv/repo/migrations: 20190730144413_add_daily_stats.exs
-Only in analytics-1d0300a03abc393ebea4f0385a039822548bc5ad/priv/repo/migrations: 20190809174105_calc_screen_size.exs
-Only in analytics-1d0300a03abc393ebea4f0385a039822548bc5ad/priv/repo/migrations: 20190810145419_remove_unused_indices.exs
-Only in analytics-1d0300a03abc393ebea4f0385a039822548bc5ad/priv/repo/migrations: 20190820140747_remove_rollup_tables.exs
-diff -r analytics-1d0300a03abc393ebea4f0385a039822548bc5ad/priv/repo/migrations/20190906111810_add_email_reporting.exs plausible/priv/repo/migrations/20190906111810_add_email_reporting.exs
-5c5
-<     create table(:email_settings) do
----
->     create table(:weekly_reports) do
-6a7
->       add :recipient_list, :text, null: false
-11c12
-<     create table(:sent_email_reports) do
----
->     create table(:sent_weekly_reports) do
-17a19,36
-> 
->     create table(:monthly_reports) do
->       add :site_id, references(:sites, on_delete: :delete_all), null: false
->       add :recipient_list, :text, null: false
-> 
->       timestamps()
->     end
-> 
->     create table(:sent_monthly_reports) do
->       add :site_id, references(:sites, on_delete: :delete_all), null: false
->       add :year, :integer, null: false
->       add :month, :integer, null: false
-> 
->       add :timestamp, :naive_datetime
->     end
-> 
->     create unique_index(:weekly_reports, :site_id)
->     create unique_index(:monthly_reports, :site_id)
-Only in analytics-1d0300a03abc393ebea4f0385a039822548bc5ad/priv/repo/migrations: 20190907134114_add_unique_index_to_email_settings.exs
-Only in analytics-1d0300a03abc393ebea4f0385a039822548bc5ad/priv/repo/migrations: 20190910120900_add_email_address_to_settings.exs
-Only in analytics-1d0300a03abc393ebea4f0385a039822548bc5ad/priv/repo/migrations: 20190911102027_add_monthly_reports.exs
-Only in analytics-1d0300a03abc393ebea4f0385a039822548bc5ad/priv/repo/migrations: 20191010031425_add_property_to_google_auth.exs
-Only in analytics-1d0300a03abc393ebea4f0385a039822548bc5ad/priv/repo/migrations: 20191015072730_remove_unused_fields.exs
-diff -r analytics-1d0300a03abc393ebea4f0385a039822548bc5ad/priv/repo/migrations/20191031051340_add_goals.exs plausible/priv/repo/migrations/20191031051340_add_goals.exs
-7d6
-<       add :name, :text, null: false
-14c13
-<     create unique_index(:goals, [:domain, :name])
----
->     #create unique_index(:goals, [:domain, :event_name])
-Only in analytics-1d0300a03abc393ebea4f0385a039822548bc5ad/priv/repo/migrations: 20191031063001_remove_goal_name.exs
-diff -r analytics-1d0300a03abc393ebea4f0385a039822548bc5ad/priv/repo/migrations/20191118075359_allow_free_subscriptions.exs plausible/priv/repo/migrations/20191118075359_allow_free_subscriptions.exs
-7,10c7,10
-<       ALTER paddle_subscription_id DROP NOT NULL,
-<       ALTER update_url DROP NOT NULL,
-<       ALTER cancel_url DROP NOT NULL,
-<       ALTER next_bill_date DROP NOT NULL
----
->       MODIFY paddle_subscription_id varchar(255),
->       MODIFY update_url text,
->       MODIFY cancel_url text,
->       MODIFY next_bill_date date
-Only in analytics-1d0300a03abc393ebea4f0385a039822548bc5ad/priv/repo/migrations: 20191216064647_add_unique_index_to_email_reports.exs
-diff -r analytics-1d0300a03abc393ebea4f0385a039822548bc5ad/priv/repo/migrations/20191218082207_add_sessions.exs plausible/priv/repo/migrations/20191218082207_add_sessions.exs
-6c6
-<       add :hostname, :text, null: false
----
->       add :hostname, :string, size: 255, null: false
-18a19
->       add :site_id, :string, size: 255, null: false
-Only in analytics-1d0300a03abc393ebea4f0385a039822548bc5ad/priv/repo/migrations: 20200106090739_cascade_google_auth_deletion.exs
-diff -r analytics-1d0300a03abc393ebea4f0385a039822548bc5ad/priv/repo/migrations/20200107095234_add_entry_page_to_sessions.exs plausible/priv/repo/migrations/20200107095234_add_entry_page_to_sessions.exs
-6,22c6
-<       add :entry_page, :text
-<     end
-< 
-<     execute """
-<     UPDATE sessions SET entry_page = pathname
-<     FROM events
-<     WHERE events.user_id = sessions.user_id
-<     AND events.name = 'pageview'
-<     AND events.new_visitor
-<     """
-< 
-<     execute """
-<     DELETE FROM sessions WHERE entry_page is null
-<     """
-< 
-<     alter table(:sessions) do
-<       modify :entry_page, :text, null: false
----
->       add :entry_page, :text, null: false
-diff -r analytics-1d0300a03abc393ebea4f0385a039822548bc5ad/priv/repo/migrations/20200114131538_add_tweets.exs plausible/priv/repo/migrations/20200114131538_add_tweets.exs
-18c18
-<     create unique_index(:tweets, [:link, :tweet_id])
----
->     #create unique_index(:tweets, [:link, :tweet_id])
-Only in analytics-1d0300a03abc393ebea4f0385a039822548bc5ad/priv/repo/migrations: 20200121091251_add_recipients.exs
-diff -r analytics-1d0300a03abc393ebea4f0385a039822548bc5ad/priv/repo/migrations/20200130123049_add_site_id_to_events.exs plausible/priv/repo/migrations/20200130123049_add_site_id_to_events.exs
-5,23d4
-<     alter table(:events) do
-<       add :site_id, :text
-<     end
-< 
-<     alter table(:sessions) do
-<       add :site_id, :text
-<     end
-< 
-<     execute "UPDATE events set site_id=hostname"
-<     execute "UPDATE sessions set site_id=hostname"
-< 
-<     alter table(:events) do
-<       modify :site_id, :text, null: false
-<     end
-< 
-<     alter table(:sessions) do
-<       modify :site_id, :text, null: false
-<     end
-< 
-29,35c10
-<     alter table(:events) do
-<       remove :site_id
-<     end
-< 
-<     alter table(:sessions) do
-<       remove :site_id
-<     end
----
->     # TODO: here's hoping we never have to use this
-diff -r analytics-1d0300a03abc393ebea4f0385a039822548bc5ad/priv/repo/migrations/20200204133522_drop_events_hostname_index.exs plausible/priv/repo/migrations/20200204133522_drop_events_hostname_index.exs
-5c5,7
-<     drop index("pageviews", :hostname)
----
->     execute """
->       DROP INDEX pageviews_hostname_index ON events
-> """
-diff -r analytics-1d0300a03abc393ebea4f0385a039822548bc5ad/priv/repo/migrations/20200227092821_add_fingerprint_sesssions.exs plausible/priv/repo/migrations/20200227092821_add_fingerprint_sesssions.exs
-6c6
-<       add :hostname, :text, null: false
----
->       add :hostname, :string, size: 255, null: false
-Only in analytics-1d0300a03abc393ebea4f0385a039822548bc5ad/priv/repo/migrations: 20200317093028_add_trial_expiry_to_users.exs
-diff -r analytics-1d0300a03abc393ebea4f0385a039822548bc5ad/priv/repo/migrations/20200406115153_cascade_custom_domain_deletion.exs plausible/priv/repo/migrations/20200406115153_cascade_custom_domain_deletion.exs
-5c5
-<     drop constraint("custom_domains", "custom_domains_site_id_fkey")
----
->     execute "ALTER TABLE custom_domains DROP FOREIGN KEY custom_domains_site_id_fkey"
-diff -r analytics-1d0300a03abc393ebea4f0385a039822548bc5ad/priv/repo/migrations/20200408122329_cascade_setup_emails_deletion.exs plausible/priv/repo/migrations/20200408122329_cascade_setup_emails_deletion.exs
-5,6c5,6
-<     drop constraint("setup_help_emails", "setup_help_emails_site_id_fkey")
-<     drop constraint("setup_success_emails", "setup_success_emails_site_id_fkey")
----
->     execute "ALTER TABLE setup_help_emails DROP FOREIGN KEY setup_help_emails_site_id_fkey"
->     execute "ALTER TABLE setup_success_emails DROP FOREIGN KEY setup_success_emails_site_id_fkey"
-Only in analytics-1d0300a03abc393ebea4f0385a039822548bc5ad/priv/repo/migrations: 20200529071028_add_oban_jobs_table.exs
-diff -r analytics-1d0300a03abc393ebea4f0385a039822548bc5ad/priv/repo/migrations/20200619071221_create_salts_table.exs plausible/priv/repo/migrations/20200619071221_create_salts_table.exs
-6c6
-<       add :salt, :bytea, null: false
----
->       add :salt, :blob, null: false
-diff -r analytics-1d0300a03abc393ebea4f0385a039822548bc5ad/test/support/factory.ex plausible/test/support/factory.ex
-87c87,89
-<       operating_system: ""
----
->       operating_system: "",
->       product_id: nil,
->       returned_product_ids: nil
-diff -r analytics-1d0300a03abc393ebea4f0385a039822548bc5ad/tracker/src/p.js plausible/tracker/src/p.js
-49a50,51
->     var options = options || {}
->     var props = options.props || {}
-55a58,59
->     payload.p = props.productId || null
->     payload.s = props.returnedProductIds || null
-diff -r analytics-1d0300a03abc393ebea4f0385a039822548bc5ad/tracker/src/plausible.js plausible/tracker/src/plausible.js
-13a14,15
->     var options = options || {}
->     var props = options.props || {}
-19a22,23
->     payload.p = props.productId || null
->     payload.s = props.returnedProductIds || null
+diff --git a/hosting/deployment.yaml b/hosting/deployment.yaml
+new file mode 100644
+index 0000000..e1bc378
+--- /dev/null
++++ b/hosting/deployment.yaml
+@@ -0,0 +1,157 @@
++{
++  "kind": "Deployment",
++  "apiVersion": "extensions/v1beta1",
++  "metadata": {
++    "name": "analytics",
++    "namespace": "oc-system",
++    "selfLink": "/apis/extensions/v1beta1/namespaces/oc-system/deployments/analytics",
++    "uid": "e3da87d4-3867-11eb-8c75-00d86134f694",
++    "resourceVersion": "980718316",
++    "generation": 61,
++    "creationTimestamp": "2020-12-07T08:40:42Z",
++    "labels": {
++      "k8s-app": "analytics"
++    },
++    "annotations": {
++      "deployment.kubernetes.io/revision": "60"
++    }
++  },
++  "spec": {
++    "replicas": 1,
++    "selector": {
++      "matchLabels": {
++        "k8s-app": "analytics"
++      }
++    },
++    "template": {
++      "metadata": {
++        "name": "analytics",
++        "creationTimestamp": null,
++        "labels": {
++          "k8s-app": "analytics"
++        }
++      },
++      "spec": {
++        "containers": [
++          {
++            "name": "analytics",
++            "image": "docker-registry.oddconcepts.net/plausible/analytics:0.6.17",
++            "command": [
++                "sh"
++            ],
++            "args": [
++                "-c",
++                "sleep 10 && /entrypoint.sh db createdb && /entrypoint.sh db migrate && /entrypoint.sh db init-admin && /entrypoint.sh run"
++            ],
++            "env": [
++              {
++                "name": "ADMIN_USER_EMAIL",
++                "value": "angela@oddconcepts.kr"
++              },
++              {
++                "name": "ADMIN_USER_NAME",
++                "value": "oddconcepts"
++              },
++              {
++                "name": "ADMIN_USER_PWD",
++                "valueFrom": {
++                  "secretKeyRef": {
++                    "name": "analytics-secret",
++                    "key": "admin-user-pwd"
++                  }
++                }
++              },
++              {
++                "name": "BASE_URL",
++                "value": "https://a.pxl.ai"
++              },
++              {
++                "name": "SECRET_KEY_BASE",
++                "valueFrom": {
++                  "secretKeyRef": {
++                    "name": "analytics-secret",
++                    "key": "secret-key-base"
++                  }
++                }
++              },
++              {
++                "name": "CLICKHOUSE_DATABASE_URL",
++                "valueFrom": {
++                  "secretKeyRef": {
++                    "name": "analytics-secret",
++                    "key": "clickhouse-db-url"
++                  }
++                }
++              },
++              {
++                "name": "DATABASE_URL",
++                "valueFrom": {
++                  "secretKeyRef": {
++                    "name": "analytics-secret",
++                    "key": "meta-db-url"
++                  }
++                }
++              }
++            ],
++            "resources": {},
++            "terminationMessagePath": "/dev/termination-log",
++            "terminationMessagePolicy": "File",
++            "imagePullPolicy": "IfNotPresent",
++            "securityContext": {
++              "privileged": false,
++              "procMount": "Default"
++            }
++          }
++        ],
++        "restartPolicy": "Always",
++        "terminationGracePeriodSeconds": 30,
++        "dnsPolicy": "ClusterFirst",
++        "nodeSelector": {
++          "app-general": "yes"
++        },
++        "securityContext": {},
++        "imagePullSecrets": [
++          {
++            "name": "docker-registry.oddconcepts.net"
++          }
++        ],
++        "schedulerName": "default-scheduler"
++      }
++    },
++    "strategy": {
++      "type": "RollingUpdate",
++      "rollingUpdate": {
++        "maxUnavailable": "25%",
++        "maxSurge": "25%"
++      }
++    },
++    "revisionHistoryLimit": 10,
++    "progressDeadlineSeconds": 600
++  },
++  "status": {
++    "observedGeneration": 61,
++    "replicas": 1,
++    "updatedReplicas": 1,
++    "readyReplicas": 1,
++    "availableReplicas": 1,
++    "conditions": [
++      {
++        "type": "Available",
++        "status": "True",
++        "lastUpdateTime": "2021-05-25T08:41:37Z",
++        "lastTransitionTime": "2021-05-25T08:41:37Z",
++        "reason": "MinimumReplicasAvailable",
++        "message": "Deployment has minimum availability."
++      },
++      {
++        "type": "Progressing",
++        "status": "True",
++        "lastUpdateTime": "2021-06-16T23:38:03Z",
++        "lastTransitionTime": "2020-12-07T08:40:42Z",
++        "reason": "NewReplicaSetAvailable",
++        "message": "ReplicaSet \"analytics-8586bc4dc4\" has successfully progressed."
++      }
++    ],
++    "collisionCount": 6
++  }
++}
+\ No newline at end of file
+diff --git a/hosting/rotate_salts_cron.yaml b/hosting/rotate_salts_cron.yaml
+new file mode 100644
+index 0000000..68d7d9d
+--- /dev/null
++++ b/hosting/rotate_salts_cron.yaml
+@@ -0,0 +1,117 @@
++{
++  "kind": "CronJob",
++  "apiVersion": "batch/v1beta1",
++  "metadata": {
++    "name": "rotate-salts",
++    "namespace": "oc-system",
++    "selfLink": "/apis/batch/v1beta1/namespaces/oc-system/cronjobs/rotate-salts",
++    "uid": "61464d13-96af-11eb-8c75-00d86134f694",
++    "resourceVersion": "980739903",
++    "creationTimestamp": "2021-04-06T08:09:16Z"
++  },
++  "spec": {
++    "schedule": "0 15 * * *",
++    "startingDeadlineSeconds": 200,
++    "concurrencyPolicy": "Replace",
++    "suspend": false,
++    "jobTemplate": {
++      "metadata": {
++        "creationTimestamp": null
++      },
++      "spec": {
++        "template": {
++          "metadata": {
++            "creationTimestamp": null,
++            "labels": {
++              "parent": "cronjobanalytics"
++            }
++          },
++          "spec": {
++            "containers": [
++              {
++                "name": "analytics-cron",
++                "image": "docker-registry.oddconcepts.net/plausible/analytics:0.6.5",
++                "command": [
++                    "sh"
++                ],
++                "args": [
++                    "-c",
++                    "sleep 10 && cd /app && /app/bin/plausible eval 'Mix.Tasks.RotateSalts.run(1)'"
++                ],
++                "env": [
++                  {
++                    "name": "ADMIN_USER_EMAIL",
++                    "value": "angela@oddconcepts.kr"
++                  },
++                  {
++                    "name": "ADMIN_USER_NAME",
++                    "value": "oddconcepts"
++                  },
++                  {
++                    "name": "ADMIN_USER_PWD",
++                    "valueFrom": {
++                      "secretKeyRef": {
++                        "name": "analytics-secret",
++                        "key": "admin-user-pwd"
++                      }
++                    }
++                  },
++                  {
++                    "name": "BASE_URL",
++                    "value": "https://analytics-beta.pxl.ai"
++                  },
++                  {
++                    "name": "SECRET_KEY_BASE",
++                    "valueFrom": {
++                      "secretKeyRef": {
++                        "name": "analytics-secret",
++                        "key": "secret-key-base"
++                      }
++                    }
++                  },
++                  {
++                    "name": "CLICKHOUSE_DATABASE_URL",
++                    "valueFrom": {
++                      "secretKeyRef": {
++                        "name": "analytics-secret",
++                        "key": "clickhouse-db-url"
++                      }
++                    }
++                  },
++                  {
++                    "name": "DATABASE_URL",
++                    "valueFrom": {
++                      "secretKeyRef": {
++                        "name": "analytics-secret",
++                        "key": "meta-db-url"
++                      }
++                    }
++                  }
++                ],
++                "resources": {},
++                "terminationMessagePath": "/dev/termination-log",
++                "terminationMessagePolicy": "File",
++                "imagePullPolicy": "IfNotPresent"
++              }
++            ],
++            "restartPolicy": "OnFailure",
++            "terminationGracePeriodSeconds": 30,
++            "dnsPolicy": "ClusterFirst",
++            "securityContext": {},
++            "imagePullSecrets": [
++              {
++                "name": "docker-registry.oddconcepts.net"
++              }
++            ],
++            "schedulerName": "default-scheduler"
++          }
++        }
++      }
++    },
++    "successfulJobsHistoryLimit": 3,
++    "failedJobsHistoryLimit": 1
++  },
++  "status": {
++    "lastScheduleTime": "2021-06-16T15:00:00Z"
++  }
++}
+\ No newline at end of file
+diff --git a/hosting/service-staging.yaml b/hosting/service-staging.yaml
+new file mode 100644
+index 0000000..8c1c47e
+--- /dev/null
++++ b/hosting/service-staging.yaml
+@@ -0,0 +1,42 @@
++{
++  "kind": "Service",
++  "apiVersion": "v1",
++  "metadata": {
++    "name": "analytics-dev",
++    "namespace": "oc-system",
++    "selfLink": "/api/v1/namespaces/oc-system/services/analytics-dev",
++    "uid": "c6e7286a-4002-11eb-8c75-00d86134f694",
++    "resourceVersion": "575072585",
++    "creationTimestamp": "2020-12-17T00:57:03Z",
++    "labels": {
++      "k8s-app": "analytics-dev"
++    }
++  },
++  "spec": {
++    "ports": [
++      {
++        "name": "tcp-80-8000-zbnlp",
++        "protocol": "TCP",
++        "port": 80,
++        "targetPort": 8000,
++        "nodePort": 32023
++      }
++    ],
++    "selector": {
++      "k8s-app": "analytics-dev"
++    },
++    "clusterIP": "10.106.155.17",
++    "type": "LoadBalancer",
++    "sessionAffinity": "None",
++    "externalTrafficPolicy": "Cluster"
++  },
++  "status": {
++    "loadBalancer": {
++      "ingress": [
++        {
++          "ip": "192.168.100.126"
++        }
++      ]
++    }
++  }
++}
+\ No newline at end of file
+diff --git a/hosting/service.yaml b/hosting/service.yaml
+new file mode 100644
+index 0000000..6719eeb
+--- /dev/null
++++ b/hosting/service.yaml
+@@ -0,0 +1,42 @@
++{
++  "kind": "Service",
++  "apiVersion": "v1",
++  "metadata": {
++    "name": "analytics",
++    "namespace": "oc-system",
++    "selfLink": "/api/v1/namespaces/oc-system/services/analytics",
++    "uid": "e3e4dff9-3867-11eb-8c75-00d86134f694",
++    "resourceVersion": "520635142",
++    "creationTimestamp": "2020-12-07T08:40:42Z",
++    "labels": {
++      "k8s-app": "analytics"
++    }
++  },
++  "spec": {
++    "ports": [
++      {
++        "name": "tcp-80-8000-g28kn",
++        "protocol": "TCP",
++        "port": 80,
++        "targetPort": 8000,
++        "nodePort": 30733
++      }
++    ],
++    "selector": {
++      "k8s-app": "analytics"
++    },
++    "clusterIP": "10.103.133.248",
++    "type": "LoadBalancer",
++    "sessionAffinity": "None",
++    "externalTrafficPolicy": "Cluster"
++  },
++  "status": {
++    "loadBalancer": {
++      "ingress": [
++        {
++          "ip": "192.168.100.122"
++        }
++      ]
++    }
++  }
++}
+\ No newline at end of file
+diff --git a/k8s.yaml b/k8s.yaml
+new file mode 100644
+index 0000000..7011ad8
+--- /dev/null
++++ b/k8s.yaml
+@@ -0,0 +1,135 @@
++{
++  "kind": "Deployment",
++  "apiVersion": "extensions/v1beta1",
++  "metadata": {
++    "name": "analytics-test",
++    "namespace": "oc-system",
++    "selfLink": "/apis/extensions/v1beta1/namespaces/oc-system/deployments/analytics-test",
++    "uid": "73186011-23f2-11eb-8c75-00d86134f694",
++    "resourceVersion": "384748587",
++    "generation": 17,
++    "creationTimestamp": "2020-11-11T07:49:38Z",
++    "labels": {
++      "k8s-app": "analytics-test"
++    },
++    "annotations": {
++      "deployment.kubernetes.io/revision": "17"
++    }
++  },
++  "spec": {
++    "replicas": 1,
++    "selector": {
++      "matchLabels": {
++        "k8s-app": "analytics-test"
++      }
++    },
++    "template": {
++      "metadata": {
++        "name": "analytics-test",
++        "creationTimestamp": null,
++        "labels": {
++          "k8s-app": "analytics-test"
++        }
++      },
++      "spec": {
++        "containers": [
++          {
++            "name": "analytics-test",
++            "image": "docker-registry.oddconcepts.net/plausible/analytics:0.4.36",
++            "command": [
++                "sh"
++            ],
++            "args": [
++                "-c",
++                "sleep 10 && /entrypoint.sh db createdb && /entrypoint.sh db migrate && /entrypoint.sh db init-admin && /entrypoint.sh run"
++            ],
++            "env": [
++              {
++                "name": "ADMIN_USER_EMAIL",
++                "value": "angela@oddconcepts.kr"
++              },
++              {
++                "name": "ADMIN_USER_NAME",
++                "value": "oddconcepts"
++              },
++              {
++                "name": "ADMIN_USER_PWD",
++                "value": "odd0503concepts"
++              },
++              {
++                "name": "BASE_URL",
++                "value": "192.168.100.122"
++              },
++              {
++                "name": "SECRET_KEY_BASE",
++                "value": "afg6I5UtlbJMU8cy7xY4isjVXyYvbdXmK/5ekd034fnlmZxakrjSZQHijKrw/zOa"
++              },
++              {
++                "name": "DATABASE_URL"
++              },
++              {
++                "name": "CLICKHOUSE_DATABASE_URL",
++                "value": "http://default:odd0503concepts@192.168.7.10:8123/plausible_test"
++              },
++              {
++                "name": "DATABASE_URL",
++                "value": "ecto://plausible:3O6JldKm&2sB@192.168.100.88:3306/plausible_db"
++              }
++            ],
++            "resources": {},
++            "terminationMessagePath": "/dev/termination-log",
++            "terminationMessagePolicy": "File",
++            "imagePullPolicy": "IfNotPresent",
++            "securityContext": {
++              "privileged": false,
++              "procMount": "Default"
++            }
++          }
++        ],
++        "restartPolicy": "Always",
++        "terminationGracePeriodSeconds": 30,
++        "dnsPolicy": "ClusterFirst",
++        "securityContext": {},
++        "imagePullSecrets": [
++          {
++            "name": "docker-registry.oddconcepts.net"
++          }
++        ],
++        "schedulerName": "default-scheduler"
++      }
++    },
++    "strategy": {
++      "type": "RollingUpdate",
++      "rollingUpdate": {
++        "maxUnavailable": "25%",
++        "maxSurge": "25%"
++      }
++    },
++    "revisionHistoryLimit": 10,
++    "progressDeadlineSeconds": 600
++  },
++  "status": {
++    "observedGeneration": 17,
++    "replicas": 1,
++    "updatedReplicas": 1,
++    "unavailableReplicas": 1,
++    "conditions": [
++      {
++        "type": "Progressing",
++        "status": "True",
++        "lastUpdateTime": "2020-11-11T09:11:03Z",
++        "lastTransitionTime": "2020-11-11T07:49:38Z",
++        "reason": "NewReplicaSetAvailable",
++        "message": "ReplicaSet \"analytics-test-67c57b567c\" has successfully progressed."
++      },
++      {
++        "type": "Available",
++        "status": "False",
++        "lastUpdateTime": "2020-11-12T08:59:09Z",
++        "lastTransitionTime": "2020-11-12T08:59:09Z",
++        "reason": "MinimumReplicasUnavailable",
++        "message": "Deployment does not have minimum availability."
++      }
++    ]
++  }
++}
+\ No newline at end of file
+diff --git a/lib/mix/tasks/rotate_salts.ex b/lib/mix/tasks/rotate_salts.ex
+new file mode 100644
+index 0000000..5be96e8
+--- /dev/null
++++ b/lib/mix/tasks/rotate_salts.ex
+@@ -0,0 +1,13 @@
++defmodule Mix.Tasks.RotateSalts do
++  use Plausible.Repo
++  use Mix.Task
++
++  def rotate do
++    Plausible.Session.Salts.rotate()
++  end
++
++  def run(_) do
++    Application.ensure_all_started(:plausible)
++    Mix.Tasks.RotateSalts.rotate()
++  end
++end
+diff --git a/lib/plausible/application.ex b/lib/plausible/application.ex
+index 100aab6..ecc2fe1 100644
+--- a/lib/plausible/application.ex
++++ b/lib/plausible/application.ex
+@@ -11,12 +11,12 @@ defmodule Plausible.Application do
+       Plausible.Event.WriteBuffer,
+       Plausible.Session.WriteBuffer,
+       Plausible.Session.Store,
+-      Plausible.Session.Salts,
+-      {Oban, Application.get_env(:plausible, Oban)}
++      Plausible.Session.Salts
+     ]
+ 
+     opts = [strategy: :one_for_one, name: Plausible.Supervisor]
+     {:ok, _} = Logger.add_backend(Sentry.LoggerBackend)
++    :ok = :telemetry.attach("ch-slow-queries", [:my_app, :repo, :query], &Plausible.ClickhouseMonitor.handle_event/4, %{})
+     Application.put_env(:plausible, :server_start, Timex.now())
+     Supervisor.start_link(children, opts)
+   end
+diff --git a/lib/plausible/clickhouse_monitor.ex b/lib/plausible/clickhouse_monitor.ex
+new file mode 100644
+index 0000000..13c426a
+--- /dev/null
++++ b/lib/plausible/clickhouse_monitor.ex
+@@ -0,0 +1,27 @@
++defmodule Plausible.ClickhouseMonitor do
++  require Logger
++
++  def rotate_instance() do
++    backup_urls = !Keyword.fetch!(Application.get_env(:plausible, Plausible.ClickhouseRepo), :backup_urls)
++                  |> String.split
++    active_url = !Keyword.fetch!(Application.get_env(:plausible, Plausible.ClickhouseRepo), :url)
++    case Enum.find_index(backup_urls, fn url -> url == active_url end) do
++      nil ->
++        Enum.at(backup_urls, 0, active_url)
++      ind ->
++        Enum.at(backup_urls, rem(ind + 1, Enum.count(backup_urls)), active_url)
++    end
++  end
++
++  # Handler follows https://www.erlang-solutions.com/blog/introducing-telemetry/.
++  def handle_event([:plausible, :clickhouse_repo, :query], measurements, metadata, _config) do
++    if System.convert_time_unit(measurements.total_time, :native, :millisecond) > 2500 do
++      Logger.warn("Query #{inspect(metadata.query)} took #{measurements.total_time}ms")
++      old_ch = !Keyword.fetch!(Application.get_env(:plausible, Plausible.ClickhouseRepo), :url)
++      new_ch = Plausible.ClickhouseMonitor.rotate_instance()
++      Logger.warn("Hit soft timeout -- rotating to new instance (was #{old_ch} now #{new_ch})")
++      Application.put_env(:plausible, Plausible.ClickhouseRepo, [url: new_ch])
++      Supervisor.stop(Plausible.ClickhouseRepo)
++    end
++  end
++end
+diff --git a/lib/plausible/event/clickhouse_schema.ex b/lib/plausible/event/clickhouse_schema.ex
+index e4cd90b..6c37a6f 100644
+--- a/lib/plausible/event/clickhouse_schema.ex
++++ b/lib/plausible/event/clickhouse_schema.ex
+@@ -5,22 +5,40 @@ defmodule Plausible.ClickhouseEvent do
+   @primary_key false
+   schema "events" do
+     field :name, :string
++    field :app_name, :string
++    field :event_label, :string
++    field :event_category, :string
+     field :domain, :string
+     field :hostname, :string
+     field :pathname, :string
+     field :user_id, :integer
+     field :session_id, :integer
++    field :external_user_id, :integer
++    field :product_id, :string
+ 
+     field :referrer, :string
+     field :referrer_source, :string
+     field :utm_medium, :string
+     field :utm_source, :string
+     field :utm_campaign, :string
++    field :origin_utm_medium, :string
++    field :origin_utm_source, :string
++    field :origin_utm_campaign, :string
++    field :order_id, :string
+ 
+     field :country_code, :string
+     field :screen_size, :string
+     field :operating_system, :string
+     field :browser, :string
++    field :returned_product_ids, :string
++    field :saved_product_ids, :string
++    field :price, :decimal
++    field :pxl_items, :integer
++    field :total_items, :integer
++    field :pxl_revenue, :decimal
++    field :total_revenue, :decimal
++    field :undiscounted_revenue, :decimal
++    field :error_code, :integer
+ 
+     timestamps(inserted_at: :timestamp, updated_at: false)
+   end
+@@ -29,10 +47,22 @@ defmodule Plausible.ClickhouseEvent do
+     pageview
+     |> cast(attrs, [
+       :name,
++      :app_name,
++      :event_label,
++      :event_category,
+       :domain,
+       :hostname,
+       :pathname,
+       :user_id,
++      :session_id,
++      :product_id,
++      :returned_product_ids,
++      :price,
++      :pxl_revenue,
++      :total_revenue,
++      :undiscounted_revenue,
++      :pxl_items,
++      :total_items,
+       :operating_system,
+       :browser,
+       :referrer,
+@@ -40,9 +70,13 @@ defmodule Plausible.ClickhouseEvent do
+       :utm_medium,
+       :utm_source,
+       :utm_campaign,
++      :origin_utm_medium,
++      :origin_utm_source,
++      :origin_utm_campaign,
+       :country_code,
+-      :screen_size
++      :screen_size,
++      :error_code
+     ])
+-    |> validate_required([:name, :domain, :hostname, :pathname, :user_id])
++    |> validate_required([:name, :event_label, :domain, :hostname, :pathname, :user_id])
+   end
+ end
+diff --git a/lib/plausible/event/write_buffer.ex b/lib/plausible/event/write_buffer.ex
+index 723ca1f..7abd0b7 100644
+--- a/lib/plausible/event/write_buffer.ex
++++ b/lib/plausible/event/write_buffer.ex
+@@ -2,7 +2,7 @@ defmodule Plausible.Event.WriteBuffer do
+   use GenServer
+   require Logger
+   @flush_interval_ms 5_000
+-  @max_buffer_size 10_000
++  @max_buffer_size 1_000
+ 
+   def start_link(_opts) do
+     GenServer.start_link(__MODULE__, [], name: __MODULE__)
+diff --git a/lib/plausible/repo.ex b/lib/plausible/repo.ex
+index 2f9147e..85ec912 100644
+--- a/lib/plausible/repo.ex
++++ b/lib/plausible/repo.ex
+@@ -1,7 +1,7 @@
+ defmodule Plausible.Repo do
+   use Ecto.Repo,
+     otp_app: :plausible,
+-    adapter: Ecto.Adapters.Postgres
++    adapter: Ecto.Adapters.MyXQL
+ 
+   defmacro __using__(_) do
+     quote do
+diff --git a/lib/plausible/session/salts.ex b/lib/plausible/session/salts.ex
+index ceb6fc5..39edaf8 100644
+--- a/lib/plausible/session/salts.ex
++++ b/lib/plausible/session/salts.ex
+@@ -50,7 +50,7 @@ defmodule Plausible.Session.Salts do
+ 
+   defp clean_old_salts() do
+     Repo.delete_all(
+-      from s in "salts", where: s.inserted_at < fragment("now() - '48 hours'::interval")
++      from s in "salts", where: s.inserted_at < fragment("subtime(now(), '48:00:00')")
+     )
+   end
+ end
+diff --git a/lib/plausible/session/store.ex b/lib/plausible/session/store.ex
+index 35d8c40..2e0d898 100644
+--- a/lib/plausible/session/store.ex
++++ b/lib/plausible/session/store.ex
+@@ -38,6 +38,11 @@ defmodule Plausible.Session.Store do
+         _e -> %{}
+       end
+ 
++    Logger.warn( fn ->
++      n = Enum.count(sessions)
++      "Initialized with #{n} sessions}"
++    end)
++
+     {:ok, %{timer: timer, sessions: sessions}}
+   end
+ 
+diff --git a/lib/plausible/session/write_buffer.ex b/lib/plausible/session/write_buffer.ex
+index 24e9222..a55d969 100644
+--- a/lib/plausible/session/write_buffer.ex
++++ b/lib/plausible/session/write_buffer.ex
+@@ -1,8 +1,8 @@
+ defmodule Plausible.Session.WriteBuffer do
+   use GenServer
+   require Logger
+-  @flush_interval_ms 1000
+-  @max_buffer_size 10_000
++  @flush_interval_ms 5_000
++  @max_buffer_size 1_000
+ 
+   def start_link(_opts) do
+     GenServer.start_link(__MODULE__, [], name: __MODULE__)
+diff --git a/lib/plausible/site/monthly_report.ex b/lib/plausible/site/monthly_report.ex
+index e6069ff..f5f82b6 100644
+--- a/lib/plausible/site/monthly_report.ex
++++ b/lib/plausible/site/monthly_report.ex
+@@ -3,12 +3,23 @@ defmodule Plausible.Site.MonthlyReport do
+   import Ecto.Changeset
+ 
+   schema "monthly_reports" do
+-    field :recipients, {:array, :string}
++    field :recipients, {:array, :string}, virtual: true
++    field :recipient_list, :string
+     belongs_to :site, Plausible.Site
+ 
+     timestamps()
+   end
+ 
++  @spec unflatten_recipients(%Plausible.Site.MonthlyReport{}) :: %Plausible.Site.MonthlyReport{}
++  def unflatten_recipients(%Plausible.Site.MonthlyReport{} = config) do
++    %{config | recipients: String.split(config.recipient_list, "||")}
++  end
++
++  @spec flatten_recipients(%Plausible.Site.MonthlyReport{}) :: %Plausible.Site.MonthlyReport{}
++  def flatten_recipients(%Plausible.Site.MonthlyReport{} = config) do
++    %{config | recipient_list: Enum.join(config.recipients, "||")}
++  end
++
+   def changeset(settings, attrs \\ %{}) do
+     settings
+     |> cast(attrs, [:site_id, :recipients])
+diff --git a/lib/plausible/site/weekly_report.ex b/lib/plausible/site/weekly_report.ex
+index 80f533c..7222253 100644
+--- a/lib/plausible/site/weekly_report.ex
++++ b/lib/plausible/site/weekly_report.ex
+@@ -3,12 +3,23 @@ defmodule Plausible.Site.WeeklyReport do
+   import Ecto.Changeset
+ 
+   schema "weekly_reports" do
+-    field :recipients, {:array, :string}
++    field :recipients, {:array, :string}, virtual: true
++    field :recipient_list, :string
+     belongs_to :site, Plausible.Site
+ 
+     timestamps()
+   end
+ 
++  @spec unflatten_recipients(%Plausible.Site.WeeklyReport{}) :: %Plausible.Site.WeeklyReport{}
++  def unflatten_recipients(%Plausible.Site.WeeklyReport{} = config) do
++    %{config | recipients: String.split(config.recipient_list, "||")}
++  end
++
++  @spec flatten_recipients(%Plausible.Site.WeeklyReport{}) :: %Plausible.Site.WeeklyReport{}
++  def flatten_recipients(%Plausible.Site.WeeklyReport{} = config) do
++    %{config | recipient_list: Enum.join(config.recipients, "||")}
++  end
++
+   def changeset(settings, attrs \\ %{}) do
+     settings
+     |> cast(attrs, [:site_id, :recipients])
+diff --git a/lib/plausible_web/controllers/api/external_controller.ex b/lib/plausible_web/controllers/api/external_controller.ex
+index bb36aaf..943d486 100644
+--- a/lib/plausible_web/controllers/api/external_controller.ex
++++ b/lib/plausible_web/controllers/api/external_controller.ex
+@@ -13,11 +13,11 @@ defmodule PlausibleWeb.Api.ExternalController do
+       {:error, changeset} ->
+         request = Sentry.Plug.build_request_interface_data(conn, [])
+ 
++        Logger.warn("Error processing event: #{inspect(changeset)}")
++
+         Sentry.capture_message("Error processing event",
+           extra: %{errors: inspect(changeset.errors), params: params, request: request}
+         )
+-
+-        Logger.info("Error processing event: #{inspect(changeset)}")
+         conn |> send_resp(400, "")
+     end
+   end
+@@ -62,54 +62,92 @@ defmodule PlausibleWeb.Api.ExternalController do
+       "domain" => params["d"] || params["domain"],
+       "screen_width" => params["w"] || params["screen_width"],
+       "hash_mode" => params["h"] || params["hashMode"],
++      "product_id" => params["p"] || params["productId"],
++      "order_id" => params["o"] || params["orderId"],
++      "returned_product_ids" => params["s"] || params["searchResults"],
++      "price" => params["c"] || params["price"],
++      "event_category" => params["cat"] || params["eventCategory"],
++      "event_label" => params["label"] || params["eventLabel"],
++      "app_name" => params["app"] || params["appName"],
++      "pxl_items" => params["pi"] || params["pxlItems"],
++      "total_items" => params["ti"] || params["totalItems"],
++      "pxl_revenue" => params["pr"] || params["pxlRevenue"],
++      "total_revenue" => params["tr"] || params["totalRevenue"],
++      "undiscounted_revenue" => params["ur"] || params["undiscountedRevenue"],
++      "external_user" => params["eu"] || params["externalUser"],
++      "utm_medium" => params["um"] || params["utmMedium"],
++      "utm_source" => params["us"] || params["utmSource"],
++      "utm_campaign" => params["uc"] || params["utmCampaign"],
++      "error_code" => params["ec"] || params["errorCode"]
+     }
+ 
+     uri = params["url"] && URI.parse(URI.decode(params["url"]))
+     user_agent = Plug.Conn.get_req_header(conn, "user-agent") |> List.first()
+ 
+-    if UAInspector.bot?(user_agent) do
++    if false do
+       {:ok, nil}
+     else
+       query = if uri && uri.query, do: URI.decode_query(uri.query), else: %{}
+-      ua =
+-        if user_agent do
+-          UAInspector.Parser.parse(user_agent)
+-        end
++      ua = user_agent
+ 
+       ref = parse_referrer(uri, params["referrer"])
+       country_code = visitor_country(conn)
+       salts = Plausible.Session.Salts.fetch()
+ 
+-      event_attrs = %{
+-        timestamp: NaiveDateTime.utc_now() |> NaiveDateTime.truncate(:second),
+-        name: params["name"],
+-        hostname: strip_www(uri && uri.host),
+-        domain: strip_www(params["domain"]) || strip_www(uri && uri.host),
+-        pathname: get_pathname(uri, params["hash_mode"]),
+-        user_id: generate_user_id(conn, params, salts[:current]),
+-        referrer_source: get_referrer_source(query, ref) || "",
+-        referrer: clean_referrer(ref) || "",
+-        utm_medium: query["utm_medium"] || "",
+-        utm_source: query["utm_source"] || "",
+-        utm_campaign: query["utm_campaign"] || "",
+-        country_code: country_code || "",
+-        operating_system: ua && os_name(ua) || "",
+-        browser: ua && browser_name(ua) || "",
+-        screen_size: calculate_screen_size(params["screen_width"]) || ""
+-      }
+-
+-      changeset = Plausible.ClickhouseEvent.changeset(%Plausible.ClickhouseEvent{}, event_attrs)
+-
+-      if changeset.valid? do
+-        previous_user_id = salts[:previous] && generate_user_id(conn, params, salts[:previous])
+-        event = struct(Plausible.ClickhouseEvent, event_attrs)
+-        session_id = Plausible.Session.Store.on_event(event, previous_user_id)
+-
+-        Map.put(event, :session_id, session_id)
+-        |> Plausible.Event.WriteBuffer.insert()
+-      else
+-        {:error, changeset}
++      try do
++        event_attrs = %{
++          timestamp: NaiveDateTime.utc_now() |> NaiveDateTime.truncate(:second),
++          name: params["name"],
++          hostname: strip_www(uri && uri.host),
++          domain: strip_www(params["domain"]) || strip_www(uri && uri.host),
++          pathname: get_pathname(uri, params["hash_mode"]),
++          user_id: generate_user_id(conn, params, salts[:current]),
++          referrer_source: get_referrer_source(query, ref) || "",
++          referrer: clean_referrer(ref) || "",
++          utm_medium: query["utm_medium"] || "",
++          utm_source: query["utm_source"] || "",
++          utm_campaign: query["utm_campaign"] || "",
++          origin_utm_medium: params["utm_medium"] || "",
++          origin_utm_source: params["utm_source"] || "",
++          origin_utm_campaign: params["utm_campaign"] || "",
++          country_code: country_code || "",
++          operating_system: ua && os_name(ua) || "",
++          browser: ua && browser_name(ua) || "",
++          screen_size: calculate_screen_size(params["screen_width"]) || "",
++          product_id: to_string(params["product_id"]) || nil,
++          returned_product_ids: to_string(params["returned_product_ids"]) || nil,
++          saved_product_ids: nil,
++          price: (if params["price"], do: params["price"] / 1, else: nil),
++          pxl_items: params["pxl_items"] || nil,
++          total_items: params["total_items"] || nil,
++          pxl_revenue: (if params["pxl_revenue"], do: params["pxl_revenue"] / 1, else: nil),
++          total_revenue: (if params["total_revenue"], do: params["total_revenue"] / 1, else: nil),
++          undiscounted_revenue: (if params["undiscounted_revenue"], do: params["undiscounted_revenue"] / 1, else: nil),
++          event_category: params["event_category"] || parse_event_hierarchy(params["name"])["category"],
++          event_label: params["event_label"] || parse_event_hierarchy(params["name"])["label"],
++          app_name: params["app_name"] || parse_event_hierarchy(params["name"])["app"],
++          external_user_id: (if params["external_user"], do: SipHash.hash!(salts[:current], params["external_user"]), else: nil),
++          order_id: params["order_id"] || nil,
++          error_code: params["error_code"] || nil
++        }
++
++        changeset = Plausible.ClickhouseEvent.changeset(%Plausible.ClickhouseEvent{}, event_attrs)
++
++        if changeset.valid? do
++          previous_user_id = salts[:previous] && generate_user_id(conn, params, salts[:previous])
++          event = struct(Plausible.ClickhouseEvent, event_attrs)
++          session_id = Plausible.Session.Store.on_event(event, previous_user_id)
++
++          Map.put(event, :session_id, session_id)
++          |> Plausible.Event.WriteBuffer.insert()
++        else
++          {:error, changeset}
++        end
++      rescue exception ->
++        IO.inspect(exception, label: "error packaging event")
++        IO.inspect(params, label: "from params")
+       end
++
+     end
+   end
+ 
+@@ -181,22 +219,21 @@ defmodule PlausibleWeb.Api.ExternalController do
+     String.replace_prefix(hostname, "www.", "")
+   end
+ 
++  defp parse_event_hierarchy(event_name) do
++    raw = String.split(event_name, "-")
++    %{
++      "app" => (if Enum.count(raw) > 1, do: Enum.at(raw, 0), else: nil),
++      "category" => (if Enum.count(raw) > 2, do: Enum.at(raw, 1), else: nil),
++      "label" => (if Enum.count(raw) > 2, do: Enum.join(Enum.take(raw, - (Enum.count(raw) - 2)), "-"), else: Enum.at(raw, -1, event_name))
++    }
++  end
++
+   defp browser_name(ua) do
+-    case ua.client do
+-      %UAInspector.Result.Client{name: "Mobile Safari"} -> "Safari"
+-      %UAInspector.Result.Client{name: "Chrome Mobile"} -> "Chrome"
+-      %UAInspector.Result.Client{name: "Chrome Mobile iOS"} -> "Chrome"
+-      %UAInspector.Result.Client{type: "mobile app"} -> "Mobile App"
+-      :unknown -> nil
+-      client -> client.name
+-    end
++    ""
+   end
+ 
+   defp os_name(ua) do
+-    case ua.os do
+-      :unknown -> nil
+-      os -> os.name
+-    end
++    ""
+   end
+ 
+   defp get_referrer_source(query, ref) do
+diff --git a/lib/plausible_web/router.ex b/lib/plausible_web/router.ex
+index b489367..2547124 100644
+--- a/lib/plausible_web/router.ex
++++ b/lib/plausible_web/router.ex
+@@ -38,8 +38,9 @@ defmodule PlausibleWeb.Router do
+ 
+   get "/js/plausible.js", PlausibleWeb.TrackerController, :plausible
+   get "/js/plausible.hash.js", PlausibleWeb.TrackerController, :plausible_hash
++  get "/js/p.js", PlausibleWeb.TrackerController, :plausible
++  get "/js/p.hash.js", PlausibleWeb.TrackerController, :plausible_hash
+   get "/js/analytics.js", PlausibleWeb.TrackerController, :plausible
+-  get "/js/p.js", PlausibleWeb.TrackerController, :p
+ 
+   scope "/api/stats", PlausibleWeb.Api do
+     pipe_through :stats_api
+diff --git a/mix.exs b/mix.exs
+index 8fcfe43..193f63a 100644
+--- a/mix.exs
++++ b/mix.exs
+@@ -35,7 +35,6 @@ defmodule Plausible.MixProject do
+         :sentry,
+         :runtime_tools,
+         :timex,
+-        :ua_inspector,
+         :ref_inspector,
+         :bamboo,
+         :bamboo_smtp
+@@ -66,12 +65,11 @@ defmodule Plausible.MixProject do
+       {:phoenix_live_reload, "~> 1.2", only: :dev},
+       {:phoenix_pubsub, "~> 1.1"},
+       {:plug_cowboy, "~> 2.0"},
+-      {:postgrex, ">= 0.0.0"},
++      {:myxql, ">= 0.0.0"},
+       #  Used in paddle_api, can remove
+       {:poison, "~> 3.1"},
+       {:ref_inspector, "~> 1.3"},
+       {:timex, "~> 3.6"},
+-      {:ua_inspector, "~> 0.18"},
+       {:bamboo, "~> 1.3"},
+       {:bamboo_postmark, "~> 0.5"},
+       {:bamboo_smtp, "~> 2.1.0"},
+diff --git a/mix.lock b/mix.lock
+index 6fa0325..c9b70b7 100644
+--- a/mix.lock
++++ b/mix.lock
+@@ -69,7 +69,6 @@
+   "timex": {:hex, :timex, "3.6.2", "845cdeb6119e2fef10751c0b247b6c59d86d78554c83f78db612e3290f819bc2", [:mix], [{:combine, "~> 0.10", [hex: :combine, repo: "hexpm", optional: false]}, {:gettext, "~> 0.10", [hex: :gettext, repo: "hexpm", optional: false]}, {:tzdata, "~> 0.1.8 or ~> 0.5 or ~> 1.0.0", [hex: :tzdata, repo: "hexpm", optional: false]}], "hexpm", "26030b46199d02a590be61c2394b37ea25a3664c02fafbeca0b24c972025d47a"},
+   "typed_struct": {:hex, :typed_struct, "0.2.1", "e1993414c371f09ff25231393b6430bd89d780e2a499ae3b2d2b00852f593d97", [:mix], [], "hexpm", "8f5218c35ec38262f627b2c522542f1eae41f625f92649c0af701a6fab2e11b3"},
+   "tzdata": {:hex, :tzdata, "1.0.3", "73470ad29dde46e350c60a66e6b360d3b99d2d18b74c4c349dbebbc27a09a3eb", [:mix], [{:hackney, "~> 1.0", [hex: :hackney, repo: "hexpm", optional: false]}], "hexpm", "a6e1ee7003c4d04ecbd21dd3ec690d4c6662db5d3bbdd7262d53cdf5e7c746c1"},
+-  "ua_inspector": {:hex, :ua_inspector, "0.20.0", "01939baf5706f7d6c2dc0affbbd7f5e14309ba43ebf8967aa6479ee2204f23bc", [:mix], [{:hackney, "~> 1.0", [hex: :hackney, repo: "hexpm", optional: false]}, {:poolboy, "~> 1.0", [hex: :poolboy, repo: "hexpm", optional: false]}, {:yamerl, "~> 0.7", [hex: :yamerl, repo: "hexpm", optional: false]}], "hexpm", "30e8623b9f55e7d58be12fc2afd50be8792ec14192c289701d3cc93ad6027f26"},
+   "unicode_util_compat": {:hex, :unicode_util_compat, "0.4.1", "d869e4c68901dd9531385bb0c8c40444ebf624e60b6962d95952775cac5e90cd", [:rebar3], [], "hexpm", "1d1848c40487cdb0b30e8ed975e34e025860c02e419cb615d255849f3427439d"},
+   "yamerl": {:hex, :yamerl, "0.8.0", "8214cfe16bbabe5d1d6c14a14aea11c784b9a21903dd6a7c74f8ce180adae5c7", [:rebar3], [], "hexpm", "010634477bf9c208a0767dcca89116c2442cf0b5e87f9c870f85cd1c3e0c2aab"},
+ }
+diff --git a/priv/clickhouse_repo/migrations/20200915070607_create_events_and_sessions.exs b/priv/clickhouse_repo/migrations/20200915070607_create_events_and_sessions.exs
+index d846cf4..1ef874e 100644
+--- a/priv/clickhouse_repo/migrations/20200915070607_create_events_and_sessions.exs
++++ b/priv/clickhouse_repo/migrations/20200915070607_create_events_and_sessions.exs
+@@ -7,7 +7,7 @@ defmodule Plausible.ClickhouseRepo.Migrations.CreateEventsAndSessions do
+   end
+ 
+   defp create_events() do
+-    create_if_not_exists table(:events, engine: "MergeTree() PARTITION BY toYYYYMM(timestamp) ORDER BY (name, domain, user_id, timestamp) SETTINGS index_granularity = 8192") do
++    create_if_not_exists table(:events, engine: "ReplicatedMergeTree('/ch-analytics/tables/{layer}-{shard}/events', '{replica}') PARTITION BY toYYYYMM(timestamp) ORDER BY (name, domain, user_id, timestamp) SETTINGS index_granularity = 8192") do
+       add :name, :string
+       add :domain, :string
+       add :user_id, :UInt64
+@@ -26,7 +26,7 @@ defmodule Plausible.ClickhouseRepo.Migrations.CreateEventsAndSessions do
+   end
+ 
+   defp create_sessions() do
+-    create_if_not_exists table(:sessions, engine: "CollapsingMergeTree(sign) PARTITION BY toYYYYMM(start) ORDER BY (domain, user_id, session_id, start) SETTINGS index_granularity = 8192") do
++    create_if_not_exists table(:sessions, engine: "ReplicatedCollapsingMergeTree('/ch-analytics/tables/{layer}-{shard}/sessions', '{replica}', sign) PARTITION BY toYYYYMM(start) ORDER BY (domain, user_id, session_id, start) SETTINGS index_granularity = 8192") do
+       add :session_id, :UInt64
+       add :sign, :"Int8"
+       add :domain, :string
+@@ -49,4 +49,4 @@ defmodule Plausible.ClickhouseRepo.Migrations.CreateEventsAndSessions do
+       add :timestamp, :naive_datetime
+     end
+   end
+-end
++end
+\ No newline at end of file
+diff --git a/priv/clickhouse_repo/migrations/20201101000000_add_product_ids.exs b/priv/clickhouse_repo/migrations/20201101000000_add_product_ids.exs
+new file mode 100644
+index 0000000..854cb83
+--- /dev/null
++++ b/priv/clickhouse_repo/migrations/20201101000000_add_product_ids.exs
+@@ -0,0 +1,10 @@
++defmodule Plausible.ClickhouseRepo.Migrations.AddProductIds do
++  use Ecto.Migration
++
++  def change do
++    alter table(:events) do
++      add :product_id, :"Nullable(String)"
++      add :returned_product_ids, :"Nullable(String)"
++    end
++  end
++end
+diff --git a/priv/clickhouse_repo/migrations/20210525160000_add_price.exs b/priv/clickhouse_repo/migrations/20210525160000_add_price.exs
+new file mode 100644
+index 0000000..59fe9f4
+--- /dev/null
++++ b/priv/clickhouse_repo/migrations/20210525160000_add_price.exs
+@@ -0,0 +1,9 @@
++defmodule Plausible.ClickhouseRepo.Migrations.AddPrice do
++  use Ecto.Migration
++
++  def change do
++    alter table(:events) do
++      add :price, :"Nullable(Decimal64(8))"
++    end
++  end
++end
+\ No newline at end of file
+diff --git a/priv/clickhouse_repo/migrations/20210803000000_add_event_groupings.exs b/priv/clickhouse_repo/migrations/20210803000000_add_event_groupings.exs
+new file mode 100644
+index 0000000..9564a9a
+--- /dev/null
++++ b/priv/clickhouse_repo/migrations/20210803000000_add_event_groupings.exs
+@@ -0,0 +1,15 @@
++defmodule Plausible.ClickhouseRepo.Migrations.AddEventGroupings do
++  use Ecto.Migration
++
++  def change do
++    alter table(:events) do
++      add :event_category, :string
++      add :event_label, :string
++      add :app_name, :string
++      add :pxl_items, :"Nullable(UInt32)"
++      add :total_items, :"Nullable(UInt32)"
++      add :pxl_revenue, :"Nullable(Decimal64(8))"
++      add :total_revenue, :"Nullable(Decimal64(8))"
++    end
++  end
++end
+\ No newline at end of file
+diff --git a/priv/clickhouse_repo/migrations/20220315000000_add_order_info.exs b/priv/clickhouse_repo/migrations/20220315000000_add_order_info.exs
+new file mode 100644
+index 0000000..0e8e633
+--- /dev/null
++++ b/priv/clickhouse_repo/migrations/20220315000000_add_order_info.exs
+@@ -0,0 +1,11 @@
++defmodule Plausible.ClickhouseRepo.Migrations.AddOrderInfo do
++  use Ecto.Migration
++
++  def change do
++    alter table(:events) do
++      add :order_id, :"Nullable(UInt64)", default: fragment("toUInt64OrNull(event_label)")
++      add :saved_product_ids, :"Nullable(String)"
++      add :external_user_id, :"Nullable(UInt64)"
++    end
++  end
++end
+\ No newline at end of file
+diff --git a/priv/clickhouse_repo/migrations/20220424000000_add_manual_utms.exs b/priv/clickhouse_repo/migrations/20220424000000_add_manual_utms.exs
+new file mode 100644
+index 0000000..26a5a6a
+--- /dev/null
++++ b/priv/clickhouse_repo/migrations/20220424000000_add_manual_utms.exs
+@@ -0,0 +1,11 @@
++defmodule Plausible.ClickhouseRepo.Migrations.AddManualUtms do
++  use Ecto.Migration
++
++  def change do
++    alter table(:events) do
++      add :origin_utm_medium, :string
++      add :origin_utm_source, :string
++      add :origin_utm_campaign, :string
++    end
++  end
++end
+\ No newline at end of file
+diff --git a/priv/clickhouse_repo/migrations/20220715000000_add_error_code.exs b/priv/clickhouse_repo/migrations/20220715000000_add_error_code.exs
+new file mode 100644
+index 0000000..b52cb04
+--- /dev/null
++++ b/priv/clickhouse_repo/migrations/20220715000000_add_error_code.exs
+@@ -0,0 +1,9 @@
++defmodule Plausible.ClickhouseRepo.Migrations.AddErrorCode do
++  use Ecto.Migration
++
++  def change do
++    alter table(:events) do
++      add :error_code, :"Nullable(Int64)"
++    end
++  end
++end
+\ No newline at end of file
+diff --git a/priv/clickhouse_repo/migrations/20220808000000_add_undiscounted_revenue.exs b/priv/clickhouse_repo/migrations/20220808000000_add_undiscounted_revenue.exs
+new file mode 100644
+index 0000000..607d98b
+--- /dev/null
++++ b/priv/clickhouse_repo/migrations/20220808000000_add_undiscounted_revenue.exs
+@@ -0,0 +1,9 @@
++defmodule Plausible.ClickhouseRepo.Migrations.AddUndiscountedRevenue do
++  use Ecto.Migration
++
++  def change do
++    alter table(:events) do
++      add :undiscounted_revenue, :"Nullable(Decimal64(8))"
++    end
++  end
++end
+\ No newline at end of file
+diff --git a/priv/repo/migrations/20181201181549_add_pageviews.exs b/priv/repo/migrations/20181201181549_add_pageviews.exs
+index f728dfb..c152fc7 100644
+--- a/priv/repo/migrations/20181201181549_add_pageviews.exs
++++ b/priv/repo/migrations/20181201181549_add_pageviews.exs
+@@ -3,12 +3,11 @@ defmodule Plausible.Repo.Migrations.AddPageviews do
+ 
+   def change do
+     create table(:pageviews) do
+-      add :hostname, :text, null: false
++      add :hostname, :string, size: 255, null: false
+       add :pathname, :text, null: false
+       add :referrer, :text
+-      add :user_agent, :text
+-      add :screen_width, :integer
+       add :screen_height, :integer
++      add :site_id, :string, size: 255, null: false
+ 
+       timestamps()
+     end
+diff --git a/priv/repo/migrations/20190109173917_create_sites.exs b/priv/repo/migrations/20190109173917_create_sites.exs
+index 564ed7a..db1cb82 100644
+--- a/priv/repo/migrations/20190109173917_create_sites.exs
++++ b/priv/repo/migrations/20190109173917_create_sites.exs
+@@ -4,6 +4,7 @@ defmodule Plausible.Repo.Migrations.CreateSites do
+   def change do
+     create table(:users) do
+       add :email, :string, null: false
++      add :trial_expiry_date, :date, null: false
+ 
+       timestamps()
+     end
+diff --git a/priv/repo/migrations/20190213224404_add_intro_emails.exs b/priv/repo/migrations/20190213224404_add_intro_emails.exs
+index ce27890..62cbe17 100644
+--- a/priv/repo/migrations/20190213224404_add_intro_emails.exs
++++ b/priv/repo/migrations/20190213224404_add_intro_emails.exs
+@@ -3,7 +3,7 @@ defmodule Plausible.Repo.Migrations.AddIntroEmails do
+ 
+   def change do
+     create table(:intro_emails) do
+-      add :user_id, references(:users), null: false
++      add :user_id, references(:users, on_delete: :delete_all), null: false
+       add :timestamp, :naive_datetime
+     end
+   end
+diff --git a/priv/repo/migrations/20190219130809_delete_intro_emails_when_user_is_deleted.exs b/priv/repo/migrations/20190219130809_delete_intro_emails_when_user_is_deleted.exs
+deleted file mode 100644
+index 3fb741d..0000000
+--- a/priv/repo/migrations/20190219130809_delete_intro_emails_when_user_is_deleted.exs
++++ /dev/null
+@@ -1,11 +0,0 @@
+-defmodule Plausible.Repo.Migrations.DeleteIntroEmailsWhenUserIsDeleted do
+-  use Ecto.Migration
+-
+-  def change do
+-    alter table(:intro_emails) do
+-      modify :user_id, references(:users, on_delete: :delete_all),
+-        null: false,
+-        from: references(:users)
+-    end
+-  end
+-end
+diff --git a/priv/repo/migrations/20190324155606_add_password_hash_to_users.exs b/priv/repo/migrations/20190324155606_add_password_hash_to_users.exs
+index 73b844e..8acbbf8 100644
+--- a/priv/repo/migrations/20190324155606_add_password_hash_to_users.exs
++++ b/priv/repo/migrations/20190324155606_add_password_hash_to_users.exs
+@@ -3,7 +3,7 @@ defmodule Plausible.Repo.Migrations.AddPasswordHashToUsers do
+ 
+   def change do
+     alter table(:users) do
+-      add :password_hash, :string
++      add :password_hash, :string, size: 255
+     end
+   end
+ end
+diff --git a/priv/repo/migrations/20190410095248_add_feedback_emails.exs b/priv/repo/migrations/20190410095248_add_feedback_emails.exs
+index bc1f62e..405c16b 100644
+--- a/priv/repo/migrations/20190410095248_add_feedback_emails.exs
++++ b/priv/repo/migrations/20190410095248_add_feedback_emails.exs
+@@ -3,7 +3,7 @@ defmodule Plausible.Repo.Migrations.AddFeedbackEmails do
+ 
+   def change do
+     create table(:feedback_emails) do
+-      add :user_id, references(:users), null: false
++      add :user_id, references(:users, on_delete: :delete_all), null: false
+       add :timestamp, :naive_datetime, null: false
+     end
+   end
+diff --git a/priv/repo/migrations/20190424162903_delete_feedback_emails_when_user_is_deleted.exs b/priv/repo/migrations/20190424162903_delete_feedback_emails_when_user_is_deleted.exs
+deleted file mode 100644
+index 88a0aea..0000000
+--- a/priv/repo/migrations/20190424162903_delete_feedback_emails_when_user_is_deleted.exs
++++ /dev/null
+@@ -1,11 +0,0 @@
+-defmodule Plausible.Repo.Migrations.DeleteFeedbackEmailsWhenUserIsDeleted do
+-  use Ecto.Migration
+-
+-  def change do
+-    alter table(:feedback_emails) do
+-      modify :user_id, references(:users, on_delete: :delete_all),
+-        null: false,
+-        from: references(:users)
+-    end
+-  end
+-end
+diff --git a/priv/repo/migrations/20190430140411_use_citext_for_email.exs b/priv/repo/migrations/20190430140411_use_citext_for_email.exs
+deleted file mode 100644
+index ecb6f80..0000000
+--- a/priv/repo/migrations/20190430140411_use_citext_for_email.exs
++++ /dev/null
+@@ -1,11 +0,0 @@
+-defmodule Plausible.Repo.Migrations.UseCitextForEmail do
+-  use Ecto.Migration
+-
+-  def change do
+-    execute "CREATE EXTENSION IF NOT EXISTS citext;"
+-
+-    alter table(:users) do
+-      modify :email, :citext, null: false
+-    end
+-  end
+-end
+diff --git a/priv/repo/migrations/20190520144229_change_user_id_to_uuid.exs b/priv/repo/migrations/20190520144229_change_user_id_to_uuid.exs
+deleted file mode 100644
+index 3e12b54..0000000
+--- a/priv/repo/migrations/20190520144229_change_user_id_to_uuid.exs
++++ /dev/null
+@@ -1,7 +0,0 @@
+-defmodule Plausible.Repo.Migrations.ChangeUserIdToUuid do
+-  use Ecto.Migration
+-
+-  def change do
+-    execute("ALTER TABLE pageviews ALTER COLUMN user_id TYPE uuid USING user_id::uuid")
+-  end
+-end
+diff --git a/priv/repo/migrations/20190523160838_add_raw_referrer.exs b/priv/repo/migrations/20190523160838_add_raw_referrer.exs
+deleted file mode 100644
+index 46db662..0000000
+--- a/priv/repo/migrations/20190523160838_add_raw_referrer.exs
++++ /dev/null
+@@ -1,19 +0,0 @@
+-defmodule Plausible.Repo.Migrations.AddRawReferrer do
+-  use Ecto.Migration
+-
+-  def change do
+-    alter table(:pageviews) do
+-      add :raw_referrer, :text
+-    end
+-
+-    flush()
+-
+-    execute "UPDATE pageviews set raw_referrer = referrer"
+-
+-    flush()
+-
+-    execute """
+-      UPDATE pageviews SET referrer = split_part(split_part(regexp_replace(regexp_replace(regexp_replace(raw_referrer, '^https://', ''), '^http://', ''), '^www\.', ''), '?', 1), '#', 1)
+-    """
+-  end
+-end
+diff --git a/priv/repo/migrations/20190523171519_add_indices_to_referrers.exs b/priv/repo/migrations/20190523171519_add_indices_to_referrers.exs
+deleted file mode 100644
+index cde0af5..0000000
+--- a/priv/repo/migrations/20190523171519_add_indices_to_referrers.exs
++++ /dev/null
+@@ -1,8 +0,0 @@
+-defmodule Plausible.Repo.Migrations.AddIndicesToReferrers do
+-  use Ecto.Migration
+-
+-  def change do
+-    create index(:pageviews, :referrer_source)
+-    create index(:pageviews, :referrer)
+-  end
+-end
+diff --git a/priv/repo/migrations/20190718160353_create_google_search_console_integration.exs b/priv/repo/migrations/20190718160353_create_google_search_console_integration.exs
+index ed86923..9a1bcae 100644
+--- a/priv/repo/migrations/20190718160353_create_google_search_console_integration.exs
++++ b/priv/repo/migrations/20190718160353_create_google_search_console_integration.exs
+@@ -8,10 +8,22 @@ defmodule Plausible.Repo.Migrations.CreateGoogleSearchConsoleIntegration do
+       add :refresh_token, :string, null: false
+       add :access_token, :string, null: false
+       add :expires, :naive_datetime, null: false
++      add :site_id, references(:sites, on_delete: :delete_all), null: false
++      add :property, :text
+ 
+       timestamps()
+     end
+ 
+-    create unique_index(:google_auth, :user_id)
++    create unique_index(:google_auth, [:site_id])
++
++    #flush()
++
++    #for auth <- Repo.all(Plausible.Site.GoogleAuth) do
++    #  auth = Repo.preload(auth, :site)
++    #  property = "https://#{auth.site.domain}"
++
++    #  Plausible.Site.GoogleAuth.set_property(auth, %{property: property})
++    #  |> Repo.update!()
++    #end
+   end
+ end
+diff --git a/priv/repo/migrations/20190723141824_associate_google_auth_with_site.exs b/priv/repo/migrations/20190723141824_associate_google_auth_with_site.exs
+deleted file mode 100644
+index d6ce39a..0000000
+--- a/priv/repo/migrations/20190723141824_associate_google_auth_with_site.exs
++++ /dev/null
+@@ -1,12 +0,0 @@
+-defmodule Plausible.Repo.Migrations.AssociateGoogleAuthWithSite do
+-  use Ecto.Migration
+-
+-  def change do
+-    alter table(:google_auth) do
+-      add :site_id, references(:sites), null: false
+-    end
+-
+-    drop unique_index(:google_auth, :user_id)
+-    create unique_index(:google_auth, :site_id)
+-  end
+-end
+diff --git a/priv/repo/migrations/20190730014913_add_monthly_stats.exs b/priv/repo/migrations/20190730014913_add_monthly_stats.exs
+deleted file mode 100644
+index ccb53ee..0000000
+--- a/priv/repo/migrations/20190730014913_add_monthly_stats.exs
++++ /dev/null
+@@ -1,17 +0,0 @@
+-defmodule Plausible.Repo.Migrations.AddMonthlyStats do
+-  use Ecto.Migration
+-
+-  def change do
+-    create table(:monthly_stats) do
+-      add :month, :date, null: false
+-      add :visitors, :integer, null: false
+-      add :pageviews, :integer, null: false
+-      add :site_id, references(:sites), null: false
+-
+-      timestamps()
+-    end
+-
+-    create index(:monthly_stats, :site_id)
+-    create index(:monthly_stats, :month)
+-  end
+-end
+diff --git a/priv/repo/migrations/20190730142200_add_weekly_stats.exs b/priv/repo/migrations/20190730142200_add_weekly_stats.exs
+deleted file mode 100644
+index 05902f1..0000000
+--- a/priv/repo/migrations/20190730142200_add_weekly_stats.exs
++++ /dev/null
+@@ -1,17 +0,0 @@
+-defmodule Plausible.Repo.Migrations.AddWeeklyStats do
+-  use Ecto.Migration
+-
+-  def change do
+-    create table(:weekly_stats) do
+-      add :week, :date, null: false
+-      add :visitors, :integer, null: false
+-      add :pageviews, :integer, null: false
+-      add :site_id, references(:sites), null: false
+-
+-      timestamps()
+-    end
+-
+-    create index(:weekly_stats, :site_id)
+-    create index(:weekly_stats, :week)
+-  end
+-end
+diff --git a/priv/repo/migrations/20190730144413_add_daily_stats.exs b/priv/repo/migrations/20190730144413_add_daily_stats.exs
+deleted file mode 100644
+index 3da91cd..0000000
+--- a/priv/repo/migrations/20190730144413_add_daily_stats.exs
++++ /dev/null
+@@ -1,17 +0,0 @@
+-defmodule Plausible.Repo.Migrations.AddDailyStats do
+-  use Ecto.Migration
+-
+-  def change do
+-    create table(:daily_stats) do
+-      add :date, :date, null: false
+-      add :visitors, :integer, null: false
+-      add :pageviews, :integer, null: false
+-      add :site_id, references(:sites), null: false
+-
+-      timestamps()
+-    end
+-
+-    create index(:daily_stats, :site_id)
+-    create index(:daily_stats, :date)
+-  end
+-end
+diff --git a/priv/repo/migrations/20190809174105_calc_screen_size.exs b/priv/repo/migrations/20190809174105_calc_screen_size.exs
+deleted file mode 100644
+index 19e7897..0000000
+--- a/priv/repo/migrations/20190809174105_calc_screen_size.exs
++++ /dev/null
+@@ -1,17 +0,0 @@
+-defmodule Plausible.Repo.Migrations.CalcScreenSize do
+-  use Ecto.Migration
+-
+-  def change do
+-    execute """
+-    UPDATE pageviews SET screen_size= (
+-    CASE
+-    WHEN screen_width is null THEN null
+-    WHEN screen_width < 576 THEN 'Mobile'
+-    WHEN screen_width < 992 THEN 'Tablet'
+-    WHEN screen_width < 1440 THEN 'Laptop'
+-    ELSE 'Desktop'
+-    END
+-    );
+-    """
+-  end
+-end
+diff --git a/priv/repo/migrations/20190810145419_remove_unused_indices.exs b/priv/repo/migrations/20190810145419_remove_unused_indices.exs
+deleted file mode 100644
+index 69ae01f..0000000
+--- a/priv/repo/migrations/20190810145419_remove_unused_indices.exs
++++ /dev/null
+@@ -1,8 +0,0 @@
+-defmodule Plausible.Repo.Migrations.RemoveUnusedIndices do
+-  use Ecto.Migration
+-
+-  def change do
+-    drop index(:pageviews, [:referrer])
+-    drop index(:pageviews, [:referrer_source])
+-  end
+-end
+diff --git a/priv/repo/migrations/20190820140747_remove_rollup_tables.exs b/priv/repo/migrations/20190820140747_remove_rollup_tables.exs
+deleted file mode 100644
+index 59aa930..0000000
+--- a/priv/repo/migrations/20190820140747_remove_rollup_tables.exs
++++ /dev/null
+@@ -1,9 +0,0 @@
+-defmodule Plausible.Repo.Migrations.RemoveRollupTables do
+-  use Ecto.Migration
+-
+-  def change do
+-    drop table(:daily_stats)
+-    drop table(:weekly_stats)
+-    drop table(:monthly_stats)
+-  end
+-end
+diff --git a/priv/repo/migrations/20190906111810_add_email_reporting.exs b/priv/repo/migrations/20190906111810_add_email_reporting.exs
+index abfcd3b..211a19c 100644
+--- a/priv/repo/migrations/20190906111810_add_email_reporting.exs
++++ b/priv/repo/migrations/20190906111810_add_email_reporting.exs
+@@ -2,18 +2,37 @@ defmodule Plausible.Repo.Migrations.AddEmailReporting do
+   use Ecto.Migration
+ 
+   def change do
+-    create table(:email_settings) do
++    create table(:weekly_reports) do
+       add :site_id, references(:sites, on_delete: :delete_all), null: false
++      add :recipient_list, :text, null: false
+ 
+       timestamps()
+     end
+ 
+-    create table(:sent_email_reports) do
++    create table(:sent_weekly_reports) do
+       add :site_id, references(:sites, on_delete: :delete_all), null: false
+       add :year, :integer
+       add :week, :integer
+ 
+       add :timestamp, :naive_datetime
+     end
++
++    create table(:monthly_reports) do
++      add :site_id, references(:sites, on_delete: :delete_all), null: false
++      add :recipient_list, :text, null: false
++
++      timestamps()
++    end
++
++    create table(:sent_monthly_reports) do
++      add :site_id, references(:sites, on_delete: :delete_all), null: false
++      add :year, :integer, null: false
++      add :month, :integer, null: false
++
++      add :timestamp, :naive_datetime
++    end
++
++    create unique_index(:weekly_reports, :site_id)
++    create unique_index(:monthly_reports, :site_id)
+   end
+ end
+diff --git a/priv/repo/migrations/20190907134114_add_unique_index_to_email_settings.exs b/priv/repo/migrations/20190907134114_add_unique_index_to_email_settings.exs
+deleted file mode 100644
+index f597def..0000000
+--- a/priv/repo/migrations/20190907134114_add_unique_index_to_email_settings.exs
++++ /dev/null
+@@ -1,7 +0,0 @@
+-defmodule Plausible.Repo.Migrations.AddUniqueIndexToEmailSettings do
+-  use Ecto.Migration
+-
+-  def change do
+-    create unique_index(:email_settings, :site_id)
+-  end
+-end
+diff --git a/priv/repo/migrations/20190910120900_add_email_address_to_settings.exs b/priv/repo/migrations/20190910120900_add_email_address_to_settings.exs
+deleted file mode 100644
+index 3ffea29..0000000
+--- a/priv/repo/migrations/20190910120900_add_email_address_to_settings.exs
++++ /dev/null
+@@ -1,16 +0,0 @@
+-defmodule Plausible.Repo.Migrations.AddEmailAddressToSettings do
+-  use Ecto.Migration
+-  use Plausible.Repo
+-
+-  def change do
+-    alter table(:email_settings) do
+-      add :email, :citext
+-    end
+-
+-    flush()
+-
+-    alter table(:email_settings) do
+-      modify :email, :citext, null: false
+-    end
+-  end
+-end
+diff --git a/priv/repo/migrations/20190911102027_add_monthly_reports.exs b/priv/repo/migrations/20190911102027_add_monthly_reports.exs
+deleted file mode 100644
+index 57b95a6..0000000
+--- a/priv/repo/migrations/20190911102027_add_monthly_reports.exs
++++ /dev/null
+@@ -1,78 +0,0 @@
+-defmodule Plausible.Repo.Migrations.AddMonthlyReports do
+-  use Ecto.Migration
+-  use Plausible.Repo
+-
+-  def up do
+-    drop constraint(:email_settings, "email_settings_site_id_fkey")
+-    drop constraint(:email_settings, "email_settings_pkey")
+-    execute "DROP INDEX email_settings_site_id_index"
+-
+-    rename table(:email_settings), to: table(:weekly_reports)
+-
+-    alter table(:weekly_reports) do
+-      modify :id, :bigint, primary_key: true
+-      modify :site_id, references(:sites, on_delete: :delete_all), null: false
+-    end
+-
+-    execute "ALTER SEQUENCE email_settings_id_seq RENAME TO weekly_reports_id_seq;"
+-    create unique_index(:weekly_reports, :site_id)
+-
+-    drop constraint(:sent_email_reports, "sent_email_reports_site_id_fkey")
+-    drop constraint(:sent_email_reports, "sent_email_reports_pkey")
+-
+-    rename table(:sent_email_reports), to: table(:sent_weekly_reports)
+-
+-    alter table(:sent_weekly_reports) do
+-      modify :id, :bigint, primary_key: true
+-      modify :site_id, references(:sites, on_delete: :delete_all), null: false
+-    end
+-
+-    execute "ALTER SEQUENCE sent_email_reports_id_seq RENAME TO sent_weekly_reports_id_seq;"
+-
+-    create table(:monthly_reports) do
+-      add :site_id, references(:sites, on_delete: :delete_all), null: false
+-      add :email, :citext, null: false
+-
+-      timestamps()
+-    end
+-
+-    create table(:sent_monthly_reports) do
+-      add :site_id, references(:sites, on_delete: :delete_all), null: false
+-      add :year, :integer, null: false
+-      add :month, :integer, null: false
+-
+-      add :timestamp, :naive_datetime
+-    end
+-  end
+-
+-  def down do
+-    drop constraint(:weekly_reports, "weekly_reports_site_id_fkey")
+-    drop constraint(:weekly_reports, "weekly_reports_pkey")
+-    execute "DROP INDEX weekly_reports_site_id_index"
+-
+-    rename table(:weekly_reports), to: table(:email_settings)
+-
+-    alter table(:email_settings) do
+-      modify :id, :bigint, primary_key: true
+-      modify :site_id, references(:sites, on_delete: :delete_all), null: false
+-    end
+-
+-    execute "ALTER SEQUENCE weekly_reports_id_seq RENAME TO email_settings_id_seq;"
+-    create unique_index(:email_settings, :site_id)
+-
+-    drop constraint(:sent_weekly_reports, "sent_weekly_reports_site_id_fkey")
+-    drop constraint(:sent_weekly_reports, "sent_weekly_reports_pkey")
+-
+-    rename table(:sent_weekly_reports), to: table(:sent_email_reports)
+-
+-    alter table(:sent_email_reports) do
+-      modify :id, :bigint, primary_key: true
+-      modify :site_id, references(:sites, on_delete: :delete_all), null: false
+-    end
+-
+-    execute "ALTER SEQUENCE sent_weekly_reports_id_seq RENAME TO sent_email_reports_id_seq;"
+-
+-    drop table(:monthly_reports)
+-    drop table(:sent_monthly_reports)
+-  end
+-end
+diff --git a/priv/repo/migrations/20191010031425_add_property_to_google_auth.exs b/priv/repo/migrations/20191010031425_add_property_to_google_auth.exs
+deleted file mode 100644
+index 9c16c8b..0000000
+--- a/priv/repo/migrations/20191010031425_add_property_to_google_auth.exs
++++ /dev/null
+@@ -1,20 +0,0 @@
+-defmodule Plausible.Repo.Migrations.AddPropertyToGoogleAuth do
+-  use Ecto.Migration
+-  use Plausible.Repo
+-
+-  def change do
+-    alter table(:google_auth) do
+-      add :property, :text
+-    end
+-
+-    flush()
+-
+-    for auth <- Repo.all(Plausible.Site.GoogleAuth) do
+-      auth = Repo.preload(auth, :site)
+-      property = "https://#{auth.site.domain}"
+-
+-      Plausible.Site.GoogleAuth.set_property(auth, %{property: property})
+-      |> Repo.update!()
+-    end
+-  end
+-end
+diff --git a/priv/repo/migrations/20191015072730_remove_unused_fields.exs b/priv/repo/migrations/20191015072730_remove_unused_fields.exs
+deleted file mode 100644
+index a69b3fc..0000000
+--- a/priv/repo/migrations/20191015072730_remove_unused_fields.exs
++++ /dev/null
+@@ -1,11 +0,0 @@
+-defmodule Plausible.Repo.Migrations.RemoveUnusedFields do
+-  use Ecto.Migration
+-
+-  def change do
+-    alter table(:pageviews) do
+-      remove :raw_referrer
+-      remove :screen_width
+-      remove :user_agent
+-    end
+-  end
+-end
+diff --git a/priv/repo/migrations/20191031051340_add_goals.exs b/priv/repo/migrations/20191031051340_add_goals.exs
+index 3894264..6336d0c 100644
+--- a/priv/repo/migrations/20191031051340_add_goals.exs
++++ b/priv/repo/migrations/20191031051340_add_goals.exs
+@@ -4,13 +4,12 @@ defmodule Plausible.Repo.Migrations.AddGoals do
+   def change do
+     create table(:goals) do
+       add :domain, :text, null: false
+-      add :name, :text, null: false
+       add :event_name, :text
+       add :page_path, :text
+ 
+       timestamps()
+     end
+ 
+-    create unique_index(:goals, [:domain, :name])
++    #create unique_index(:goals, [:domain, :event_name])
+   end
+ end
+diff --git a/priv/repo/migrations/20191031063001_remove_goal_name.exs b/priv/repo/migrations/20191031063001_remove_goal_name.exs
+deleted file mode 100644
+index b4c57c1..0000000
+--- a/priv/repo/migrations/20191031063001_remove_goal_name.exs
++++ /dev/null
+@@ -1,9 +0,0 @@
+-defmodule Plausible.Repo.Migrations.RemoveGoalName do
+-  use Ecto.Migration
+-
+-  def change do
+-    alter table(:goals) do
+-      remove :name
+-    end
+-  end
+-end
+diff --git a/priv/repo/migrations/20191118075359_allow_free_subscriptions.exs b/priv/repo/migrations/20191118075359_allow_free_subscriptions.exs
+index 3073ba7..1cb27b3 100644
+--- a/priv/repo/migrations/20191118075359_allow_free_subscriptions.exs
++++ b/priv/repo/migrations/20191118075359_allow_free_subscriptions.exs
+@@ -4,10 +4,10 @@ defmodule Plausible.Repo.Migrations.AllowFreeSubscriptions do
+   def up do
+     execute """
+     ALTER table subscriptions
+-      ALTER paddle_subscription_id DROP NOT NULL,
+-      ALTER update_url DROP NOT NULL,
+-      ALTER cancel_url DROP NOT NULL,
+-      ALTER next_bill_date DROP NOT NULL
++      MODIFY paddle_subscription_id varchar(255),
++      MODIFY update_url text,
++      MODIFY cancel_url text,
++      MODIFY next_bill_date date
+     """
+   end
+ 
+diff --git a/priv/repo/migrations/20191216064647_add_unique_index_to_email_reports.exs b/priv/repo/migrations/20191216064647_add_unique_index_to_email_reports.exs
+deleted file mode 100644
+index cbaa056..0000000
+--- a/priv/repo/migrations/20191216064647_add_unique_index_to_email_reports.exs
++++ /dev/null
+@@ -1,8 +0,0 @@
+-defmodule Plausible.Repo.Migrations.AddUniqueIndexToEmailReports do
+-  use Ecto.Migration
+-  use Plausible.Repo
+-
+-  def change do
+-    create unique_index(:monthly_reports, :site_id)
+-  end
+-end
+diff --git a/priv/repo/migrations/20191218082207_add_sessions.exs b/priv/repo/migrations/20191218082207_add_sessions.exs
+index a8dc68c..01e8278 100644
+--- a/priv/repo/migrations/20191218082207_add_sessions.exs
++++ b/priv/repo/migrations/20191218082207_add_sessions.exs
+@@ -3,7 +3,7 @@ defmodule Plausible.Repo.Migrations.AddSessions do
+ 
+   def change do
+     create table(:sessions) do
+-      add :hostname, :text, null: false
++      add :hostname, :string, size: 255, null: false
+       add :new_visitor, :boolean, null: false
+       add :user_id, :binary_id, null: false
+ 
+@@ -16,6 +16,7 @@ defmodule Plausible.Repo.Migrations.AddSessions do
+       add :screen_size, :string
+       add :operating_system, :string
+       add :browser, :string
++      add :site_id, :string, size: 255, null: false
+ 
+       timestamps(inserted_at: :timestamp, updated_at: false)
+     end
+diff --git a/priv/repo/migrations/20200106090739_cascade_google_auth_deletion.exs b/priv/repo/migrations/20200106090739_cascade_google_auth_deletion.exs
+deleted file mode 100644
+index 2025137..0000000
+--- a/priv/repo/migrations/20200106090739_cascade_google_auth_deletion.exs
++++ /dev/null
+@@ -1,11 +0,0 @@
+-defmodule Plausible.Repo.Migrations.CascadeGoogleAuthDeletion do
+-  use Ecto.Migration
+-
+-  def change do
+-    drop constraint("google_auth", "google_auth_site_id_fkey")
+-
+-    alter table(:google_auth) do
+-      modify :site_id, references(:sites, on_delete: :delete_all), null: false
+-    end
+-  end
+-end
+diff --git a/priv/repo/migrations/20200107095234_add_entry_page_to_sessions.exs b/priv/repo/migrations/20200107095234_add_entry_page_to_sessions.exs
+index da0acec..764011a 100644
+--- a/priv/repo/migrations/20200107095234_add_entry_page_to_sessions.exs
++++ b/priv/repo/migrations/20200107095234_add_entry_page_to_sessions.exs
+@@ -3,23 +3,7 @@ defmodule Plausible.Repo.Migrations.AddEntryPageToSessions do
+ 
+   def change do
+     alter table(:sessions) do
+-      add :entry_page, :text
+-    end
+-
+-    execute """
+-    UPDATE sessions SET entry_page = pathname
+-    FROM events
+-    WHERE events.user_id = sessions.user_id
+-    AND events.name = 'pageview'
+-    AND events.new_visitor
+-    """
+-
+-    execute """
+-    DELETE FROM sessions WHERE entry_page is null
+-    """
+-
+-    alter table(:sessions) do
+-      modify :entry_page, :text, null: false
++      add :entry_page, :text, null: false
+     end
+   end
+ end
+diff --git a/priv/repo/migrations/20200114131538_add_tweets.exs b/priv/repo/migrations/20200114131538_add_tweets.exs
+index c9cbce9..c081dd0 100644
+--- a/priv/repo/migrations/20200114131538_add_tweets.exs
++++ b/priv/repo/migrations/20200114131538_add_tweets.exs
+@@ -15,6 +15,6 @@ defmodule Plausible.Repo.Migrations.AddTweets do
+     end
+ 
+     create index(:tweets, :link)
+-    create unique_index(:tweets, [:link, :tweet_id])
++    #create unique_index(:tweets, [:link, :tweet_id])
+   end
+ end
+diff --git a/priv/repo/migrations/20200121091251_add_recipients.exs b/priv/repo/migrations/20200121091251_add_recipients.exs
+deleted file mode 100644
+index d7fa4c0..0000000
+--- a/priv/repo/migrations/20200121091251_add_recipients.exs
++++ /dev/null
+@@ -1,28 +0,0 @@
+-defmodule Plausible.Repo.Migrations.AddRecipients do
+-  use Ecto.Migration
+-
+-  def up do
+-    alter table(:weekly_reports) do
+-      add :recipients, {:array, :citext}, null: false, default: []
+-    end
+-
+-    execute "UPDATE weekly_reports SET recipients = array_append(recipients, email)"
+-
+-    alter table(:weekly_reports) do
+-      remove :email
+-    end
+-
+-    alter table(:monthly_reports) do
+-      add :recipients, {:array, :citext}, null: false, default: []
+-    end
+-
+-    execute "UPDATE monthly_reports SET recipients = array_append(recipients, email)"
+-
+-    alter table(:monthly_reports) do
+-      remove :email
+-    end
+-  end
+-
+-  def down do
+-  end
+-end
+diff --git a/priv/repo/migrations/20200130123049_add_site_id_to_events.exs b/priv/repo/migrations/20200130123049_add_site_id_to_events.exs
+index f9e1990..8d42800 100644
+--- a/priv/repo/migrations/20200130123049_add_site_id_to_events.exs
++++ b/priv/repo/migrations/20200130123049_add_site_id_to_events.exs
+@@ -2,36 +2,11 @@ defmodule Plausible.Repo.Migrations.AddSiteIdToEvents do
+   use Ecto.Migration
+ 
+   def up do
+-    alter table(:events) do
+-      add :site_id, :text
+-    end
+-
+-    alter table(:sessions) do
+-      add :site_id, :text
+-    end
+-
+-    execute "UPDATE events set site_id=hostname"
+-    execute "UPDATE sessions set site_id=hostname"
+-
+-    alter table(:events) do
+-      modify :site_id, :text, null: false
+-    end
+-
+-    alter table(:sessions) do
+-      modify :site_id, :text, null: false
+-    end
+-
+     create index(:events, :site_id)
+     create index(:sessions, :site_id)
+   end
+ 
+   def down do
+-    alter table(:events) do
+-      remove :site_id
+-    end
+-
+-    alter table(:sessions) do
+-      remove :site_id
+-    end
++    # TODO: here's hoping we never have to use this
+   end
+ end
+diff --git a/priv/repo/migrations/20200204133522_drop_events_hostname_index.exs b/priv/repo/migrations/20200204133522_drop_events_hostname_index.exs
+index 2f01e62..bb8b100 100644
+--- a/priv/repo/migrations/20200204133522_drop_events_hostname_index.exs
++++ b/priv/repo/migrations/20200204133522_drop_events_hostname_index.exs
+@@ -2,6 +2,8 @@ defmodule Plausible.Repo.Migrations.DropEventsHostnameIndex do
+   use Ecto.Migration
+ 
+   def change do
+-    drop index("pageviews", :hostname)
++    execute """
++      DROP INDEX pageviews_hostname_index ON events
++"""
+   end
+ end
+diff --git a/priv/repo/migrations/20200227092821_add_fingerprint_sesssions.exs b/priv/repo/migrations/20200227092821_add_fingerprint_sesssions.exs
+index 7bdd028..04855d4 100644
+--- a/priv/repo/migrations/20200227092821_add_fingerprint_sesssions.exs
++++ b/priv/repo/migrations/20200227092821_add_fingerprint_sesssions.exs
+@@ -3,7 +3,7 @@ defmodule Plausible.Repo.Migrations.AddFingerprintSesssions do
+ 
+   def change do
+     create table(:fingerprint_sessions) do
+-      add :hostname, :text, null: false
++      add :hostname, :string, size: 255, null: false
+       add :domain, :text, null: false
+       add :fingerprint, :string, size: 64, null: false
+ 
+diff --git a/priv/repo/migrations/20200317093028_add_trial_expiry_to_users.exs b/priv/repo/migrations/20200317093028_add_trial_expiry_to_users.exs
+deleted file mode 100644
+index a8602f7..0000000
+--- a/priv/repo/migrations/20200317093028_add_trial_expiry_to_users.exs
++++ /dev/null
+@@ -1,15 +0,0 @@
+-defmodule Plausible.Repo.Migrations.AddTrialExpiryToUsers do
+-  use Ecto.Migration
+-
+-  def change do
+-    alter table(:users) do
+-      add :trial_expiry_date, :date
+-    end
+-
+-    execute("UPDATE users SET trial_expiry_date=inserted_at::date + interval '30 days'")
+-
+-    alter table(:users) do
+-      modify :trial_expiry_date, :date, null: false
+-    end
+-  end
+-end
+diff --git a/priv/repo/migrations/20200406115153_cascade_custom_domain_deletion.exs b/priv/repo/migrations/20200406115153_cascade_custom_domain_deletion.exs
+index 65c9781..6d711c2 100644
+--- a/priv/repo/migrations/20200406115153_cascade_custom_domain_deletion.exs
++++ b/priv/repo/migrations/20200406115153_cascade_custom_domain_deletion.exs
+@@ -2,7 +2,7 @@ defmodule Plausible.Repo.Migrations.CascadeCustomDomainDeletion do
+   use Ecto.Migration
+ 
+   def change do
+-    drop constraint("custom_domains", "custom_domains_site_id_fkey")
++    execute "ALTER TABLE custom_domains DROP FOREIGN KEY custom_domains_site_id_fkey"
+ 
+     alter table(:custom_domains) do
+       modify :site_id, references(:sites, on_delete: :delete_all), null: false
+diff --git a/priv/repo/migrations/20200408122329_cascade_setup_emails_deletion.exs b/priv/repo/migrations/20200408122329_cascade_setup_emails_deletion.exs
+index 6a092fd..c95f317 100644
+--- a/priv/repo/migrations/20200408122329_cascade_setup_emails_deletion.exs
++++ b/priv/repo/migrations/20200408122329_cascade_setup_emails_deletion.exs
+@@ -2,8 +2,8 @@ defmodule Plausible.Repo.Migrations.CascadeSetupEmailsDeletion do
+   use Ecto.Migration
+ 
+   def change do
+-    drop constraint("setup_help_emails", "setup_help_emails_site_id_fkey")
+-    drop constraint("setup_success_emails", "setup_success_emails_site_id_fkey")
++    execute "ALTER TABLE setup_help_emails DROP FOREIGN KEY setup_help_emails_site_id_fkey"
++    execute "ALTER TABLE setup_success_emails DROP FOREIGN KEY setup_success_emails_site_id_fkey"
+ 
+     alter table(:setup_help_emails) do
+       modify :site_id, references(:sites, on_delete: :delete_all), null: false
+diff --git a/priv/repo/migrations/20200529071028_add_oban_jobs_table.exs b/priv/repo/migrations/20200529071028_add_oban_jobs_table.exs
+deleted file mode 100644
+index e9ae074..0000000
+--- a/priv/repo/migrations/20200529071028_add_oban_jobs_table.exs
++++ /dev/null
+@@ -1,11 +0,0 @@
+-defmodule Plausible.Repo.Migrations.AddObanJobsTable do
+-  use Ecto.Migration
+-
+-  def up do
+-    Oban.Migrations.up()
+-  end
+-
+-  def down do
+-    Oban.Migrations.down(version: 1)
+-  end
+-end
+diff --git a/priv/repo/migrations/20200619071221_create_salts_table.exs b/priv/repo/migrations/20200619071221_create_salts_table.exs
+index 0057bc9..57f226f 100644
+--- a/priv/repo/migrations/20200619071221_create_salts_table.exs
++++ b/priv/repo/migrations/20200619071221_create_salts_table.exs
+@@ -3,7 +3,7 @@ defmodule Plausible.Repo.Migrations.CreateSaltsTable do
+ 
+   def change do
+     create table(:salts) do
+-      add :salt, :bytea, null: false
++      add :salt, :blob, null: false
+ 
+       timestamps(updated_at: false)
+     end
+diff --git a/test/support/factory.ex b/test/support/factory.ex
+index 82f3a6b..ff8317b 100644
+--- a/test/support/factory.ex
++++ b/test/support/factory.ex
+@@ -84,7 +84,10 @@ defmodule Plausible.Factory do
+       browser: "",
+       country_code: "",
+       screen_size: "",
+-      operating_system: ""
++      operating_system: "",
++      product_id: nil,
++      returned_product_ids: nil,
++      price: nil
+     }
+   end
+ 
+diff --git a/tracker/compile.js b/tracker/compile.js
+index dbb7b4f..63310ce 100644
+--- a/tracker/compile.js
++++ b/tracker/compile.js
+@@ -19,3 +19,4 @@ compilefile(relPath('src/plausible.js'), relPath('../priv/tracker/js/plausible.j
+ compilefile(relPath('src/plausible.js'), relPath('../priv/tracker/js/plausible.hash.js'), {hashMode: true})
+ compilefile(relPath('src/p.js'), relPath('../priv/tracker/js/p.js'))
+ fs.copyFileSync(relPath('../priv/tracker/js/plausible.js'), relPath('../priv/tracker/js/analytics.js'))
++
+diff --git a/tracker/src/p.js b/tracker/src/p.js
+index 0dde6d1..355e680 100644
+--- a/tracker/src/p.js
++++ b/tracker/src/p.js
+@@ -47,12 +47,31 @@
+     if (window.location.protocol === 'file:') return ignore('website is running locally');
+     if (window.document.visibilityState === 'prerender') return ignore('document is prerendering');
+ 
++    var options = options || {}
++    var props = options.props || {}
+     var payload = CONFIG['trackAcquisition'] ? getUserData() : {}
+     payload.n = eventName
+     payload.u = window.location.href
+     payload.d = CONFIG['domain']
+     payload.r = window.document.referrer || null
+     payload.w = window.innerWidth
++    payload.p = props.productId || null
++    payload.o = props.o || props.orderId || null
++    payload.s = props.returnedProductIds || null
++    payload.c = props.price || null
++    payload.app = props.app || props.appName || null
++    payload.cat = props.cat || props.eventCategory || null
++    payload.label = props.label || props.eventLabel || null
++    payload.pi = props.pi || props.pxlItems || null
++    payload.ti = props.ti || props.totalItems || null
++    payload.pr = props.pr || props.pxlRevenue || null
++    payload.tr = props.tr || props.totalRevenue || null
++    payload.ur = props.ur || props.undiscountedRevenue || null
++    payload.eu = props.eu || props.externalUser || null
++    payload.um = props.um || props.utmMedium || null
++    payload.us = props.us || props.utmSource || null
++    payload.uc = props.uc || props.utmCampaign || null
++    payload.ec = props.ec || props.errorCode || null
+ 
+     var request = new XMLHttpRequest();
+     request.open('POST', plausibleHost + '/api/event', true);
+diff --git a/tracker/src/plausible.js b/tracker/src/plausible.js
+index 28df349..65ab724 100644
+--- a/tracker/src/plausible.js
++++ b/tracker/src/plausible.js
+@@ -11,12 +11,31 @@
+   function trigger(eventName, options) {
+     if (/^localhost$|^127(?:\.[0-9]+){0,2}\.[0-9]+$|^(?:0*\:)*?:?0*1$/.test(location.hostname) || location.protocol === 'file:') return console.warn('Ignoring event on localhost');
+ 
++    var options = options || {}
++    var props = options.props || {}
+     var payload = {}
+     payload.n = eventName
+     payload.u = location.href
+     payload.d = domain
+     payload.r = document.referrer || null
+     payload.w = window.innerWidth
++    payload.p = props.productId || null
++    payload.o = props.o || props.orderId || null
++    payload.s = props.returnedProductIds || null
++    payload.c = props.price || null
++    payload.app = props.app || props.appName || null
++    payload.cat = props.cat || props.eventCategory || null
++    payload.label = props.label || props.eventLabel || null
++    payload.pi = props.pi || props.pxlItems || null
++    payload.ti = props.ti || props.totalItems || null
++    payload.pr = props.pr || props.pxlRevenue || null
++    payload.tr = props.tr || props.totalRevenue || null
++    payload.ur = props.ur || props.undiscountedRevenue || null
++    payload.eu = props.eu || props.externalUserId || null
++    payload.um = props.um || props.utmMedium || null
++    payload.us = props.us || props.utmSource || null
++    payload.uc = props.uc || props.utmCampaign || null
++    payload.ec = props.ec || props.errorCode || null
+     {{#if hashMode}}
+     payload.h = 1
+     {{/if}}
